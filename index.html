@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>FinDom Tracker</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700;800&family=Space+Grotesk:wght@500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <!-- ===== LOGIN VIEW ===== -->
+  <div id="view-login">
+    <div class="login-backdrop"></div>
+    <div class="login-container">
+      <div class="login-header">
+        <div class="login-logo">
+          <span class="logo-text">FIN</span><span class="logo-text logo-text--accent">DOM</span>
+        </div>
+        <p class="logo-sub">T R A C K E R</p>
+        <p class="tagline" id="tagline"></p>
+      </div>
+      <div class="login-tabs">
+        <button class="tab active" data-role="dom">HERR</button>
+        <button class="tab" data-role="sub">SCHWEIN</button>
+      </div>
+      <div class="divider"></div>
+      <div class="login-form">
+        <div id="login-username-group" class="login-field-group" style="display:none">
+          <input type="text" id="login-username" placeholder="BENUTZERNAME" autocomplete="off">
+        </div>
+        <input type="password" id="login-password" placeholder="PASSWORT" autocomplete="off">
+        <button id="login-btn">EINTRETEN</button>
+        <p id="login-error" class="login-error"></p>
+      </div>
+      <p class="login-footer">— Nur für Augenhöhe: 0cm —</p>
+    </div>
+  </div>
+
+  <!-- ===== DASHBOARD VIEW ===== -->
+  <div id="view-dashboard">
+    <div id="setup-message" class="setup-container" style="display:none">
+      <div class="setup-box">
+        <h1>KONFIGURATION ERFORDERLICH</h1>
+        <p>Diese App braucht eine Firebase-Firestore-Datenbank.</p>
+        <ol>
+          <li><a href="https://console.firebase.google.com" target="_blank">console.firebase.google.com</a></li>
+          <li>Projekt erstellen → Firestore aktivieren (Testmodus)</li>
+          <li>Web-App registrieren → Config in <code>app.js</code> einfügen</li>
+        </ol>
+        <p class="setup-warn">Ohne Firebase-Konfiguration läuft nichts.</p>
+      </div>
+    </div>
+
+    <div id="dashboard-main">
+      <!-- HEADER -->
+      <header class="dash-header">
+        <div class="dash-header-inner">
+          <div class="dash-top-row">
+            <div class="dash-title-block">
+              <h2 id="dash-title"></h2>
+              <p id="dash-subtitle" class="dash-subtitle"></p>
+            </div>
+            <div class="total-box" id="total-box">
+              <span class="total-label" id="total-label">GESAMT</span>
+              <span class="total-amount" id="total-amount">0,00€</span>
+            </div>
+          </div>
+          <p id="dash-message" class="dash-message"></p>
+        </div>
+      </header>
+
+      <!-- DOM PANEL -->
+      <div id="dom-panel" style="display:none">
+        <section class="card">
+          <div class="card-header">
+            <h3 class="card-title">NEUE ZAHLUNG</h3>
+          </div>
+          <form id="payment-form" class="payment-form" autocomplete="off">
+            <div class="form-row">
+              <div class="form-group">
+                <label for="input-amount">BETRAG (€)</label>
+                <input type="number" id="input-amount" placeholder="0,00" step="0.01" min="0.01" required>
+              </div>
+              <div class="form-group">
+                <label for="input-category">KATEGORIE</label>
+                <select id="input-category" required>
+                  <option value="" disabled selected>— WÄHLEN —</option>
+                  <option value="tribut">TRIBUT</option>
+                  <option value="strafe">STRAFE</option>
+                  <option value="training">TRAINING</option>
+                  <option value="fag-tax">FAG-TAX</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-group">
+              <label for="input-sub">ZAHLENDE SAU</label>
+              <select id="input-sub" required></select>
+            </div>
+            <div class="form-group">
+              <label for="input-description">BESCHREIBUNG</label>
+              <input type="text" id="input-description" placeholder="Wofür?" required>
+            </div>
+            <div class="form-group">
+              <label for="input-date">DATUM</label>
+              <input type="date" id="input-date">
+            </div>
+            <button type="submit" class="btn btn--primary btn--full">ZAHLUNG EINTRAGEN</button>
+            <p id="form-feedback" class="form-feedback"></p>
+          </form>
+        </section>
+
+        <section class="card">
+          <div class="card-header">
+            <h3 class="card-title">ZAHLUNGEN FILTERN</h3>
+          </div>
+          <div class="filter-row">
+            <label for="filter-sub">SAU:</label>
+            <select id="filter-sub"><option value="all">ALLE SÄUE</option></select>
+          </div>
+        </section>
+
+        <section class="card" id="subs-panel">
+          <div class="card-header">
+            <h3 class="card-title">NEUE SAU</h3>
+          </div>
+          <form id="sub-form" class="payment-form" autocomplete="off">
+            <div class="form-row">
+              <div class="form-group">
+                <label for="sub-username">BENUTZERNAME</label>
+                <input type="text" id="sub-username" placeholder="z. B. schwein1" required>
+              </div>
+              <div class="form-group">
+                <label for="sub-password">PASSWORT</label>
+                <input type="text" id="sub-password" placeholder="Passwort" required>
+              </div>
+            </div>
+            <div class="form-group">
+              <label for="sub-display">NAME (OPTIONAL)</label>
+              <input type="text" id="sub-display" placeholder="Zahlschwein 1">
+            </div>
+            <button type="submit" class="btn btn--primary btn--full">SCHWEIN HINZUFÜGEN</button>
+            <p id="sub-feedback" class="form-feedback"></p>
+          </form>
+          <div class="subs-list" id="subs-list"></div>
+        </section>
+
+          <section class="card">
+            <div class="card-header card-header--accent">
+              <h3 class="card-title">F A G - T A X</h3>
+            </div>
+            <div id="fagtax-overview"></div>
+          </section>
+      </div>
+
+      <!-- PAYMENTS TABLE -->
+      <section class="card" id="payments-card">
+        <div class="card-header">
+          <h3 class="card-title" id="payments-title">ZAHLUNGSVERLAUF</h3>
+        </div>
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th class="th-date">DATUM</th>
+                <th class="th-amount">BETRAG</th>
+                <th class="th-cat">KATEGORIE</th>
+                <th class="th-sub" id="th-sub" style="display:none">ZAHLER</th>
+                <th class="th-desc">BESCHREIBUNG</th>
+                <th class="th-action" id="action-th" style="display:none"></th>
+              </tr>
+            </thead>
+            <tbody id="payments-tbody">
+              <tr><td colspan="6" class="loading-cell">LADE ZAHLUNGEN...</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p id="empty-state" class="empty-state" style="display:none"></p>
+      </section>
+    </div>
+
+    <!-- FOOTER -->
+    <footer class="dash-footer">
+      <span id="user-badge" class="user-badge"></span>
+      <button id="logout-btn" class="btn btn--ghost">AUSLOGGEN</button>
+    </footer>
+  </div>
+
+  <!-- ===== LOGIN OVERLAY (sub only) ===== -->
+  <div id="login-overlay" class="overlay" style="display:none">
+    <div class="overlay-panel overlay-panel--centered">
+      <div class="overlay-body">
+        <p class="overlay-msg" id="overlay-msg"></p>
+        <p class="overlay-sub" id="overlay-sub"></p>
+        <button id="overlay-btn" class="btn btn--primary">EINTRETEN</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== MODAL SYSTEM ===== -->
+  <div id="modal-overlay" class="overlay" style="display:none">
+    <div class="overlay-panel">
+      <div class="modal">
+        <div class="modal-header">
+          <h3 class="modal-title" id="modal-title"></h3>
+          <button class="modal-close" id="modal-close-btn">✕</button>
+        </div>
+        <div class="modal-body" id="modal-body"></div>
+        <div class="modal-footer" id="modal-footer"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== TOAST CONTAINER ===== -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
