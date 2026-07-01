@@ -34,12 +34,13 @@
   --bg-card-hover: #161616;
   --bg-inset: #080808;
   --bg-overlay: rgba(0, 0, 0, 0.92);
-  --bg-hover-red: rgba(255, 23, 68, 0.06);
+  --bg-hover: rgba(255, 255, 255, 0.03);
+  --bg-hover-red: rgba(255, 23, 68, 0.08);
 
   --text: #ffffff;
-  --text-secondary: #a0a0a0;
-  --text-dim: #666666;
-  --text-muted: #444444;
+  --text-secondary: #b8b8b8;
+  --text-dim: #8a8a8a;
+  --text-muted: #5a5a5a;
 
   --border: #1e1e1e;
   --border-light: #2a2a2a;
@@ -83,8 +84,8 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--font-body);
-  font-size: 14px;
-  line-height: 1.6;
+  font-size: 15px;
+  line-height: 1.65;
   min-height: 100vh;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -100,7 +101,7 @@ h1, h2, h3, h4, h5, h6 {
 
 input, select, textarea, button {
   font-family: var(--font-mono);
-  font-size: 0.8rem;
+  font-size: 0.85rem;
 }
 
 a {
@@ -124,7 +125,6 @@ a:hover { color: var(--red-light); text-decoration: underline; }
    VIEW SYSTEM
    ============================================= */
 #view-login {
-  display: flex;
   display: none;
   flex-direction: column;
   align-items: center;
@@ -141,8 +141,7 @@ a:hover { color: var(--red-light); text-decoration: underline; }
   min-height: 100vh;
 }
 
-#view-login.active { display: flex; }
-#view-dashboard.active { display: flex; }
+
 
 #dashboard-main {
   width: 100%;
@@ -182,7 +181,7 @@ a:hover { color: var(--red-light); text-decoration: underline; }
 .logo-sub {
   text-align: center;
   font-family: var(--font-mono);
-  font-size: 0.55rem;
+  font-size: 0.65rem;
   color: var(--text-dim);
   letter-spacing: 0.35em;
   margin-top: 4px;
@@ -192,7 +191,7 @@ a:hover { color: var(--red-light); text-decoration: underline; }
 .login-header .tagline {
   text-align: center;
   font-family: var(--font-mono);
-  font-size: 0.6rem;
+  font-size: 0.7rem;
   color: var(--text-muted);
   letter-spacing: 0.15em;
   margin-top: 16px;
@@ -213,7 +212,7 @@ a:hover { color: var(--red-light); text-decoration: underline; }
   text-align: center;
   cursor: pointer;
   font-family: var(--font-mono);
-  font-size: 0.65rem;
+  font-size: 0.75rem;
   font-weight: 700;
   letter-spacing: 0.15em;
   text-transform: uppercase;
@@ -266,7 +265,7 @@ a:hover { color: var(--red-light); text-decoration: underline; }
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  font-size: 0.65rem;
+  font-size: 0.7rem;
 }
 
 #login-btn {
@@ -298,7 +297,7 @@ a:hover { color: var(--red-light); text-decoration: underline; }
 .login-error {
   color: var(--red);
   font-family: var(--font-mono);
-  font-size: 0.6rem;
+  font-size: 0.7rem;
   font-weight: 700;
   text-align: center;
   min-height: 20px;
@@ -308,7 +307,7 @@ a:hover { color: var(--red-light); text-decoration: underline; }
 .login-footer {
   text-align: center;
   font-family: var(--font-mono);
-  font-size: 0.5rem;
+  font-size: 0.6rem;
   color: var(--text-muted);
   letter-spacing: 0.15em;
   margin-top: 20px;
@@ -324,7 +323,7 @@ a:hover { color: var(--red-light); text-decoration: underline; }
   gap: 8px;
   padding: 10px 20px;
   font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   font-weight: 700;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -417,9 +416,9 @@ a:hover { color: var(--red-light); text-decoration: underline; }
 }
 
 .btn--sm {
-  padding: 6px 12px;
-  font-size: 0.6rem;
-  min-height: 32px;
+  padding: 8px 14px;
+  font-size: 0.65rem;
+  min-height: 36px;
 }
 
 .btn:disabled {
@@ -453,7 +452,7 @@ a:hover { color: var(--red-light); text-decoration: underline; }
 .dash-title-block { flex: 1; }
 
 .dash-title-block h2 {
-  font-size: 1.15rem;
+  font-size: 1.3rem;
   letter-spacing: 0.1em;
   color: var(--red);
   text-shadow: 0 0 20px var(--red-glow);
@@ -461,7 +460,7 @@ a:hover { color: var(--red-light); text-decoration: underline; }
 
 .dash-subtitle {
   font-family: var(--font-mono);
-  font-size: 0.6rem;
+  font-size: 0.7rem;
   color: var(--text-dim);
   letter-spacing: 0.1em;
   margin-top: 4px;
@@ -479,7 +478,7 @@ a:hover { color: var(--red-light); text-decoration: underline; }
 .total-label {
   display: block;
   font-family: var(--font-mono);
-  font-size: 0.5rem;
+  font-size: 0.65rem;
   color: var(--text-dim);
   letter-spacing: 0.1em;
   font-weight: 600;
@@ -488,7 +487,7 @@ a:hover { color: var(--red-light); text-decoration: underline; }
 .total-amount {
   display: block;
   font-family: var(--font-heading);
-  font-size: 1.3rem;
+  font-size: 1.5rem;
   font-weight: 800;
   color: var(--red);
   letter-spacing: 0.05em;
@@ -502,7 +501,7 @@ a:hover { color: var(--red-light); text-decoration: underline; }
   padding: 14px 18px;
   margin-top: 16px;
   font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: 0.8rem;
   line-height: 1.7;
   color: var(--text);
   letter-spacing: 0.02em;
@@ -536,7 +535,7 @@ a:hover { color: var(--red-light); text-decoration: underline; }
 
 .card-title {
   font-family: var(--font-heading);
-  font-size: 0.75rem;
+  font-size: 0.85rem;
   font-weight: 700;
   letter-spacing: 0.12em;
   color: var(--text-secondary);
@@ -568,7 +567,7 @@ a:hover { color: var(--red-light); text-decoration: underline; }
 .form-group label {
   display: block;
   font-family: var(--font-mono);
-  font-size: 0.6rem;
+  font-size: 0.7rem;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--text-dim);
@@ -612,7 +611,7 @@ a:hover { color: var(--red-light); text-decoration: underline; }
 
 .form-feedback {
   font-family: var(--font-mono);
-  font-size: 0.6rem;
+  font-size: 0.7rem;
   color: var(--green);
   margin-top: 8px;
   font-weight: 700;
@@ -633,27 +632,27 @@ table {
   width: 100%;
   border-collapse: collapse;
   font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: 0.8rem;
 }
 
 thead th {
   background: var(--bg-surface);
-  color: var(--text-dim);
-  padding: 10px 12px;
+  color: var(--text-secondary);
+  padding: 12px 14px;
   text-align: left;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  font-size: 0.6rem;
+  font-size: 0.7rem;
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
 }
 
 tbody td {
-  padding: 10px 12px;
+  padding: 12px 14px;
   border-bottom: 1px solid var(--border);
   vertical-align: middle;
-  font-size: 0.7rem;
+  font-size: 0.8rem;
 }
 
 tbody tr {
@@ -664,14 +663,14 @@ tbody tr:hover {
   background: var(--bg-card-hover);
 }
 
-.date { color: var(--text-dim); font-size: 0.6rem; white-space: nowrap; }
-.amount { color: var(--red); font-weight: 800; font-size: 0.75rem; white-space: nowrap; }
+.date { color: var(--text-secondary); font-size: 0.75rem; white-space: nowrap; }
+.amount { color: var(--red); font-weight: 800; font-size: 0.85rem; white-space: nowrap; }
 
 .loading-cell {
   text-align: center;
   color: var(--text-dim);
   font-family: var(--font-mono);
-  font-size: 0.65rem;
+  font-size: 0.75rem;
   padding: 40px 20px;
   letter-spacing: 0.1em;
 }
@@ -681,7 +680,7 @@ tbody tr:hover {
   text-align: center;
   color: var(--text-dim);
   font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: 0.8rem;
   padding: 32px 20px;
   border: 1px dashed var(--border);
   margin: 16px;
@@ -737,13 +736,13 @@ tbody tr:hover {
 }
 
 .sub-uname {
-  font-size: 0.6rem;
+  font-size: 0.7rem;
   color: var(--text-dim);
   font-family: var(--font-mono);
 }
 
 .sub-total {
-  font-size: 0.7rem;
+  font-size: 0.8rem;
   font-weight: 800;
   font-family: var(--font-mono);
 }
@@ -768,8 +767,8 @@ tbody tr:hover {
   align-items: center;
   gap: 5px;
   font-family: var(--font-mono);
-  font-size: 0.55rem;
-  color: var(--text-dim);
+  font-size: 0.65rem;
+  color: var(--text-secondary);
   font-weight: 600;
   letter-spacing: 0.05em;
   cursor: pointer;
@@ -812,7 +811,7 @@ tbody tr:hover {
 }
 
 .sub-edit-fields .form-group label {
-  font-size: 0.5rem;
+  font-size: 0.6rem;
   letter-spacing: 0.08em;
 }
 
@@ -856,8 +855,8 @@ tbody tr:hover {
 
 .filter-row label {
   font-family: var(--font-mono);
-  font-size: 0.6rem;
-  color: var(--text-dim);
+  font-size: 0.7rem;
+  color: var(--text-secondary);
   letter-spacing: 0.08em;
   font-weight: 600;
 }
@@ -868,7 +867,7 @@ tbody tr:hover {
   border: 1px solid var(--border);
   color: var(--text);
   font-family: var(--font-mono);
-  font-size: 0.65rem;
+  font-size: 0.75rem;
   outline: none;
   min-height: 36px;
   cursor: pointer;
@@ -899,26 +898,26 @@ tbody tr:hover {
 
 #fagtax-overview h4 {
   margin-bottom: 12px;
-  font-size: 0.7rem;
+  font-size: 0.8rem;
   letter-spacing: 0.1em;
   color: var(--text-secondary);
 }
 
 .fagtax-table {
-  font-size: 0.6rem;
+  font-size: 0.7rem;
 }
 
 .fagtax-table thead th {
-  font-size: 0.55rem;
+  font-size: 0.65rem;
   letter-spacing: 0.08em;
-  padding: 8px;
+  padding: 10px;
   border-bottom: 1px solid var(--border-red);
   color: var(--red-dark);
 }
 
 .fagtax-table tbody td {
-  padding: 8px;
-  font-size: 0.65rem;
+  padding: 10px;
+  font-size: 0.75rem;
 }
 
 /* FagTax sub detail modal */
@@ -935,15 +934,15 @@ tbody tr:hover {
 }
 .fagtax-detail-label {
   font-family: var(--font-mono);
-  font-size: 0.5rem;
-  color: var(--text-dim);
+  font-size: 0.65rem;
+  color: var(--text-secondary);
   letter-spacing: 0.08em;
   text-transform: uppercase;
   margin-bottom: 6px;
 }
 .fagtax-detail-value {
   font-family: var(--font-heading);
-  font-size: 1rem;
+  font-size: 1.1rem;
   font-weight: 800;
   color: var(--text);
 }
@@ -957,7 +956,7 @@ tbody tr:hover {
   justify-content: space-between;
   align-items: center;
   padding: 7px 0;
-  font-size: 0.7rem;
+  font-size: 0.8rem;
   border-bottom: 1px solid var(--border);
 }
 .fagtax-cost-row:last-child {
@@ -980,7 +979,7 @@ tbody tr:hover {
 
 .fagtax-history-list h4 {
   margin-bottom: 12px;
-  font-size: 0.7rem;
+  font-size: 0.8rem;
   letter-spacing: 0.1em;
   color: var(--text-secondary);
 }
@@ -992,7 +991,7 @@ tbody tr:hover {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 14px;
+  padding: 12px 16px;
   margin-bottom: 4px;
   background: var(--bg-surface);
   border: 1px solid var(--border);
@@ -1019,7 +1018,7 @@ tbody tr:hover {
 }
 
 .sub-fagtax-section h3 {
-  font-size: 0.8rem;
+  font-size: 1rem;
   letter-spacing: 0.15em;
   color: var(--red);
   font-weight: 800;
@@ -1030,14 +1029,14 @@ tbody tr:hover {
 
 .fagtax-counter-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 12px;
 }
 
 .ft-counter-item {
   background: var(--bg-surface);
   border: 1px solid var(--border);
-  padding: 16px 12px;
+  padding: 18px 14px;
   text-align: center;
   transition: border-color var(--transition-fast);
 }
@@ -1048,8 +1047,8 @@ tbody tr:hover {
 
 .ft-counter-label {
   font-family: var(--font-mono);
-  font-size: 0.55rem;
-  color: var(--text-dim);
+  font-size: 0.7rem;
+  color: var(--text-secondary);
   letter-spacing: 0.08em;
   font-weight: 600;
   margin-bottom: 8px;
@@ -1058,7 +1057,7 @@ tbody tr:hover {
 
 .ft-counter-value {
   font-family: var(--font-heading);
-  font-size: 1.2rem;
+  font-size: 1.4rem;
   font-weight: 800;
   color: var(--text);
   letter-spacing: 0.05em;
@@ -1066,8 +1065,8 @@ tbody tr:hover {
 
 .ft-counter-cost {
   font-family: var(--font-mono);
-  font-size: 0.55rem;
-  color: var(--text-dim);
+  font-size: 0.7rem;
+  color: var(--text-secondary);
   margin-top: 6px;
   letter-spacing: 0.03em;
   font-weight: 600;
@@ -1083,7 +1082,7 @@ tbody tr:hover {
 
 .ft-bill-label {
   font-family: var(--font-mono);
-  font-size: 0.6rem;
+  font-size: 0.75rem;
   color: var(--red);
   letter-spacing: 0.1em;
   font-weight: 800;
@@ -1091,7 +1090,7 @@ tbody tr:hover {
 
 .ft-bill-amount {
   font-family: var(--font-heading);
-  font-size: 1.6rem;
+  font-size: 1.8rem;
   font-weight: 900;
   color: var(--red);
   letter-spacing: 0.08em;
@@ -1101,8 +1100,8 @@ tbody tr:hover {
 
 .ft-bill-detail {
   font-family: var(--font-mono);
-  font-size: 0.55rem;
-  color: var(--text-dim);
+  font-size: 0.7rem;
+  color: var(--text-secondary);
   letter-spacing: 0.08em;
 }
 
@@ -1112,7 +1111,7 @@ tbody tr:hover {
   border: 2px solid var(--orange);
   color: var(--orange);
   font-family: var(--font-mono);
-  font-size: 0.75rem;
+  font-size: 0.85rem;
   font-weight: 800;
   letter-spacing: 0.08em;
   cursor: pointer;
@@ -1144,7 +1143,7 @@ tbody tr:hover {
 
 .user-badge {
   font-family: var(--font-mono);
-  font-size: 0.65rem;
+  font-size: 0.75rem;
   color: var(--text);
   letter-spacing: 0.05em;
   padding: 6px 14px;
@@ -1195,7 +1194,7 @@ tbody tr:hover {
 
 .overlay-msg {
   font-family: var(--font-mono);
-  font-size: 0.75rem;
+  font-size: 0.85rem;
   line-height: 1.7;
   color: var(--text);
   margin-bottom: 16px;
@@ -1233,7 +1232,7 @@ tbody tr:hover {
 
 .modal-title {
   font-family: var(--font-heading);
-  font-size: 0.8rem;
+  font-size: 0.9rem;
   font-weight: 700;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -1262,7 +1261,7 @@ tbody tr:hover {
 .modal-body {
   padding: 20px;
   font-family: var(--font-mono);
-  font-size: 0.75rem;
+  font-size: 0.85rem;
   line-height: 1.7;
   color: var(--text-secondary);
 }
@@ -1298,7 +1297,7 @@ tbody tr:hover {
   background: var(--bg-card);
   border: 1px solid var(--border-light);
   font-family: var(--font-mono);
-  font-size: 0.65rem;
+  font-size: 0.75rem;
   color: var(--text);
   font-weight: 600;
   letter-spacing: 0.03em;
@@ -1396,8 +1395,8 @@ tbody tr:hover {
 
 .setup-box p {
   font-family: var(--font-mono);
-  font-size: 0.65rem;
-  color: var(--text-dim);
+  font-size: 0.75rem;
+  color: var(--text-secondary);
   line-height: 1.6;
   margin-bottom: 12px;
 }
@@ -1405,7 +1404,7 @@ tbody tr:hover {
 .setup-box ol {
   text-align: left;
   font-family: var(--font-mono);
-  font-size: 0.6rem;
+  font-size: 0.7rem;
   color: var(--text);
   line-height: 1.8;
   margin: 16px 0;
@@ -1416,7 +1415,7 @@ tbody tr:hover {
   background: var(--bg-surface);
   padding: 2px 6px;
   border: 1px solid var(--border);
-  font-size: 0.65rem;
+  font-size: 0.75rem;
 }
 
 .setup-warn {
@@ -1441,7 +1440,7 @@ tbody tr:hover {
 /* category badge inline */
 .category-badge {
   display: inline-block;
-  font-size: 0.6rem;
+  font-size: 0.7rem;
   font-weight: 700;
   letter-spacing: 0.05em;
   font-family: var(--font-mono);
@@ -1514,16 +1513,16 @@ tbody tr:hover {
     align-items: stretch;
   }
 
-  table { font-size: 0.6rem; }
+  table { font-size: 0.7rem; }
 
   thead th {
-    padding: 8px 6px;
-    font-size: 0.5rem;
+    padding: 10px 8px;
+    font-size: 0.6rem;
   }
 
   tbody td {
-    padding: 8px 6px;
-    font-size: 0.6rem;
+    padding: 10px 8px;
+    font-size: 0.7rem;
   }
 
   .overlay-panel {
@@ -1548,17 +1547,18 @@ tbody tr:hover {
 
 @media (max-width: 480px) {
   .dash-title-block h2 {
-    font-size: 0.95rem;
+    font-size: 1.05rem;
     letter-spacing: 0.06em;
   }
 
   .btn {
-    font-size: 0.6rem;
-    padding: 8px 14px;
+    font-size: 0.65rem;
+    padding: 10px 16px;
+    min-height: 44px; /* iOS minimum touch target */
   }
 
   .login-logo {
-    font-size: 1.5rem;
+    font-size: 1.6rem;
   }
 
   .login-container h1 {
@@ -1566,36 +1566,39 @@ tbody tr:hover {
   }
 
   .login-form input {
-    font-size: 0.7rem;
-    padding: 10px 12px;
+    font-size: 0.8rem;
+    padding: 12px 14px;
+    min-height: 44px;
   }
 
   #login-btn {
-    font-size: 0.7rem;
-    padding: 10px;
+    font-size: 0.75rem;
+    padding: 12px;
+    min-height: 48px;
   }
 
   .total-amount {
-    font-size: 1.1rem;
-  }
-
-  .ft-bill-amount {
     font-size: 1.3rem;
   }
 
+  .ft-bill-amount {
+    font-size: 1.5rem;
+  }
+
   .fagtax-table thead th {
-    font-size: 0.5rem;
-    padding: 6px 4px;
+    font-size: 0.6rem;
+    padding: 8px 6px;
   }
 
   .fagtax-table tbody td {
-    font-size: 0.55rem;
-    padding: 6px 4px;
+    font-size: 0.65rem;
+    padding: 8px 6px;
   }
 
   .btn-check-account {
-    font-size: 0.65rem;
-    padding: 12px 20px;
+    font-size: 0.75rem;
+    padding: 14px 24px;
+    min-height: 52px;
   }
 
   .dash-footer {
@@ -1606,7 +1609,7 @@ tbody tr:hover {
 
   .modal-body {
     padding: 16px;
-    font-size: 0.7rem;
+    font-size: 0.8rem;
   }
 
   .modal-footer {
@@ -1615,5 +1618,30 @@ tbody tr:hover {
 
   .modal-footer .btn {
     width: 100%;
+    min-height: 48px;
+  }
+
+  .sub-fagtax-section h3 {
+    font-size: 1.1rem;
+  }
+
+  .ft-counter-label {
+    font-size: 0.65rem;
+  }
+
+  .ft-counter-value {
+    font-size: 1.2rem;
+  }
+
+  .ft-counter-cost {
+    font-size: 0.65rem;
+  }
+
+  .overlay-msg {
+    font-size: 0.8rem;
+  }
+
+  .dash-message {
+    font-size: 0.75rem;
   }
 }

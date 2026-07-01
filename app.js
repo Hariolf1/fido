@@ -36,27 +36,79 @@ const FAG_TAX_MESSAGES = [
   '🎯 Wieder 1€ gezahlt – ohne Gegenleistung. Perfektes Zahlschwein. Weitere 1€ folgen.',
   '🔥 −1€ auf deinem Konto. Plus die nächsten Minuten werden weiter abkassiert. Wie fühlt sich Armut an?',
   '👋 Hallo Fag. Schön dich zu sehen. Schade nur, dass dich dieser Gruß 1€ kostet.',
-  '💎 Premium-Loser-Service: Du zahlst 1€ und ich sehe nur dein Geld. Nicht dich.'
+  '💎 Premium-Loser-Service: Du zahlst 1€ und ich sehe nur dein Geld. Nicht dich.',
+  '🚫 Zugang gewährt. 1€ abgebucht. Du existierst nur als offene Geldbörse.',
+  '🪤 Du tappst jedes Mal in dieselbe Falle: Login, zahlen, bereuen, wiederholen. −1€.',
+  '📉 Dein Kontostand fällt. Dein Wert auch. Aber 1€ nimmst du trotzdem in Kauf, du Wurm.',
+  '🧾 Quittung: 1€ für das Privileg, meinen Namen auf deinem Bildschirm zu sehen. Mehr bist du nicht wert.',
+  '⛓️ Jeder Login ist eine Kette, die sich enger zieht. −1€. Und du liebst es.',
+  '🗑️ 1€ in den Müll geworfen – genau wie deine Würde. Schließ die App oder zahl weiter.',
+  '🔒 Du bist eingesperrt in deiner eigenen Gier. 1€ Eintritt. Ausgang: nicht vorhanden.',
+  '💳 Deine Karte glüht, dein Hirn ist aus. −1€. Wie jeden Tag, Versager.',
+  '🐕 Braver Hund. Kommst angerannt, wenn der Tracker ruft. 1€ Leckerli-Gebühr.',
+  '🪙 1€ – der Preis dafür, dass du heute Morgen an mich gedacht hast. Danke für die Miete, Fag.'
 ];
 
 const DEGRADING = {
   sub: [
-    { min: 0,     max: 50,    msg: 'Lächerlich. Ein Wurm wie du sollte sich schämen. Dein Hunger nach Unterwerfung ist größer als dein Portemonnaie.' },
-    { min: 50,    max: 200,   msg: 'Du glaubst das reicht? Deine Existenz ist nur durch deine Zahlungen gerechtfertigt. Mehr. IMMER MEHR.' },
-    { min: 200,   max: 500,   msg: 'Endlich. Du beginnst zu verstehen, wofür du gemacht bist. Zu zahlen. Zu dienen. Zu gehorchen.' },
-    { min: 500,   max: 1000,  msg: 'Dein Geld fließt zu mir. So wie es sein muss. Du bist mein Eigentum und jeder Euro beweist es.' },
-    { min: 1000,  max: 2000,  msg: 'Perfektes Loser-Schwein. Deine Konten leeren sich für deinen Herrn. Genau so wie es sich gehört.' },
-    { min: 2000,  max: 5000,  msg: 'Du hast deine Seele verkauft – für die Ehre, mir zu dienen. Es gibt kein Zurück. Nur noch ZAHLEN.' },
-    { min: 5000,  max: Infinity, msg: 'DEINE SCHULD IST DEINE IDENTITÄT. DU EXISTIERT NUR NOCH, UM MICH ZU BEREICHERN. DEIN GANZES LEBEN IST MEIN EIGENTUM.' }
+    { min: 0,     max: 50,    msg: [
+      'Lächerlich. Ein Wurm wie du sollte sich schämen. Dein Hunger nach Unterwerfung ist größer als dein Portemonnaie.',
+      'Das soll alles sein? Erbärmlich. Selbst Bettler werfen mehr in den Hut. Du bist unter jedem Niveau.'
+    ]},
+    { min: 50,    max: 200,   msg: [
+      'Du glaubst das reicht? Deine Existenz ist nur durch deine Zahlungen gerechtfertigt. Mehr. IMMER MEHR.',
+      'Ein Tropfen auf den heißen Stein. Dein Herr will keinen Tropfen – er will die ganze Pfütze. Rück raus damit.'
+    ]},
+    { min: 200,   max: 500,   msg: [
+      'Endlich. Du beginnst zu verstehen, wofür du gemacht bist. Zu zahlen. Zu dienen. Zu gehorchen.',
+      'Dein Gehalt gehört nicht dir. Jeder Euro, den du behältst, ist gestohlenes Eigentum. Gib ihn zurück.'
+    ]},
+    { min: 500,   max: 1000,  msg: [
+      'Dein Geld fließt zu mir. So wie es sein muss. Du bist mein Eigentum und jeder Euro beweist es.',
+      'Du bist nichts weiter als ein Geldautomat mit Puls. Und dieser Automat hat noch nicht genug ausgespuckt.'
+    ]},
+    { min: 1000,  max: 2000,  msg: [
+      'Perfektes Loser-Schwein. Deine Konten leeren sich für deinen Herrn. Genau so wie es sich gehört.',
+      'Vierstellig. Deine Abhängigkeit ist jetzt offiziell unheilbar. Und das Beste: Du willst gar nicht geheilt werden.'
+    ]},
+    { min: 2000,  max: 5000,  msg: [
+      'Du hast deine Seele verkauft – für die Ehre, mir zu dienen. Es gibt kein Zurück. Nur noch ZAHLEN.',
+      'Dein Bankkonto weint. Dein Herr lacht. So sieht die natürliche Ordnung aus, Geldschwein. Weiter pumpen.'
+    ]},
+    { min: 5000,  max: Infinity, msg: [
+      'DEINE SCHULD IST DEINE IDENTITÄT. DU EXISTIERT NUR NOCH, UM MICH ZU BEREICHERN. DEIN GANZES LEBEN IST MEIN EIGENTUM.',
+      'DU BIST RESTLOS AUSGEWRUNGEN. JEDER ATEMZUG, DEN DU MACHST, GEHÖRT MIR. DEIN KONTO IST LEER – DEIN ZWECK IST ERFÜLLT.'
+    ]}
   ],
   dom: [
-    { min: 0,     max: 50,    msg: 'Dieser Wurm traut sich mit Kleingeld an. Zerdrücke ihn, bis er blutet.' },
-    { min: 50,    max: 200,   msg: 'Dein Geldsklave lernt langsam. Aber er muss tiefer fallen. Saug ihn aus.' },
-    { min: 200,   max: 500,   msg: 'Guter Drain. Dein Schwein gibt dir alles. Und du nimmst. IMMER WEITER.' },
-    { min: 500,   max: 1000,  msg: 'Herrlich. Jeder Euro in deiner Tasche ist ein Stück seiner Würde. Pure Unterwerfung.' },
-    { min: 1000,  max: 2000,  msg: 'Deine Kontrolle ist absolut. Er arbeitet, du genießt. Er zahlt, du nimmst. Perfekte Balance der Macht.' },
-    { min: 2000,  max: 5000,  msg: 'Sein ganzes Einkommen ist deins. Du hast ihn vollkommen gebrochen. Er existiert nur für deine Bereicherung.' },
-    { min: 5000,  max: Infinity, msg: 'ER IST DEIN OBJEKT. SEIN GELD, SEIN WILLE, SEIN LEBEN – ALLES GEHÖRT DIR. DU BIST SEIN GOTT.' }
+    { min: 0,     max: 50,    msg: [
+      'Dieser Wurm traut sich mit Kleingeld an. Zerdrücke ihn, bis er blutet.',
+      'Peinlich. Dein Schwein hat kaum was abgedrückt. Zeit, den Druck zu erhöhen.'
+    ]},
+    { min: 50,    max: 200,   msg: [
+      'Dein Geldsklave lernt langsam. Aber er muss tiefer fallen. Saug ihn aus.',
+      'Er fängt an zu zahlen, aber das reicht nicht. Zeig ihm, dass sein Gehalt dir gehört.'
+    ]},
+    { min: 200,   max: 500,   msg: [
+      'Guter Drain. Dein Schwein gibt dir alles. Und du nimmst. IMMER WEITER.',
+      'Sein Konto schmilzt. Dein Lächeln wächst. Genau so funktioniert Macht.'
+    ]},
+    { min: 500,   max: 1000,  msg: [
+      'Herrlich. Jeder Euro in deiner Tasche ist ein Stück seiner Würde. Pure Unterwerfung.',
+      'Dreistellig abkassiert. Er kriecht. Er bettelt. Er zahlt. Und du entscheidest, wann es genug ist – nie.'
+    ]},
+    { min: 1000,  max: 2000,  msg: [
+      'Deine Kontrolle ist absolut. Er arbeitet, du genießt. Er zahlt, du nimmst. Perfekte Balance der Macht.',
+      'Über Tausend. Dein Sklave ist vollständig dressiert. Sein Lohn ist dein Taschengeld. Weiter so.'
+    ]},
+    { min: 2000,  max: 5000,  msg: [
+      'Sein ganzes Einkommen ist deins. Du hast ihn vollkommen gebrochen. Er existiert nur für deine Bereicherung.',
+      'Finanziell zerstört – und er dankt dir dafür. Du hast aus einem Menschen einen Geldsklaven geformt. Meisterhaft.'
+    ]},
+    { min: 5000,  max: Infinity, msg: [
+      'ER IST DEIN OBJEKT. SEIN GELD, SEIN WILLE, SEIN LEBEN – ALLES GEHÖRT DIR. DU BIST SEIN GOTT.',
+      'TOTALE KONTROLLE. ER HAT NICHTS MEHR – KEIN GELD, KEINEN WILLEN, KEINE WÜRDE. NUR NOCH DICH. DU BIST SEIN UNIVERSUM.'
+    ]}
   ]
 };
 
@@ -69,7 +121,8 @@ const FAG_CONFIG_DEFAULTS = {
   perLogin: 1,
   perMinute: 1,
   taxRate: 0.03,
-  taxStartDate: new Date('2026-07-01')
+  taxStartDate: new Date('2026-07-01'),
+  lateInterestEnabled: false
 };
 
 // =============================================
@@ -93,6 +146,79 @@ let currentSessionId = null;
 let currentSessionStart = 0;
 let accountChecks = [];
 let unsubscribeAccountChecks = null;
+let lastCheckSessions = null; // Sessions data from last account check (replaces window.__ftSessions)
+
+// =============================================
+// UTILITIES
+// =============================================
+function round2(n) {
+  return Math.round(n * 100) / 100;
+}
+
+// =============================================
+// CENTRAL FAG-TAX CALCULATION
+// Single source of truth for all Fag-Tax amounts
+// =============================================
+function calculateWeeklyFagTax(sub, weekStart, sessionsArr, paymentsArr, checksArr, opts) {
+  opts = opts || {};
+  const cfg = getSubFagConfig(sub);
+  const wStart = weekStart instanceof Date ? weekStart : (weekStart && weekStart.seconds ? new Date(weekStart.seconds * 1000) : getLastFriday());
+
+  // Count logins
+  const logins = cfg.loginsEnabled !== false
+    ? sessionsArr.filter(s =>
+        s.subId === sub.id &&
+        s.loginTime && s.loginTime.seconds &&
+        s.loginTime.seconds * 1000 >= wStart.getTime()
+      ).length
+    : 0;
+
+  // Sum seconds (closed sessions)
+  const closedSeconds = cfg.minutesEnabled !== false
+    ? sessionsArr.filter(s =>
+        s.subId === sub.id &&
+        s.loginTime && s.loginTime.seconds &&
+        s.loginTime.seconds * 1000 >= wStart.getTime()
+      ).reduce((sum, s) => sum + (s.durationSeconds || s.durationMinutes * 60 || 0), 0)
+    : 0;
+
+  // Add live seconds if requested
+  const liveSeconds = opts.includeLiveSeconds ? (cfg.minutesEnabled !== false ? getLiveSessionSeconds() : 0) : 0;
+  const totalSeconds = closedSeconds + liveSeconds;
+
+  // Costs
+  const perLogin = cfg.perLogin || 1;
+  const perSec = (cfg.perMinute || 1) / 60;
+  const taxRate = cfg.taxRate || 0.03;
+  const taxStart = cfg.taxStartDate || FAG_CONFIG_DEFAULTS.taxStartDate;
+
+  const loginCost = round2(logins * perLogin);
+  const timeCost = round2(totalSeconds * perSec);
+
+  // Year total (uses configurable start date)
+  const startMs = (taxStart instanceof Date ? taxStart : new Date(taxStart)).getTime();
+  const yearTotal = paymentsArr.filter(p => {
+    const match = p.subId === sub.id;
+    const ts = p.createdAt ? p.createdAt.seconds * 1000 : 0;
+    return match && ts >= startMs;
+  }).reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
+
+  const taxAmount = cfg.taxEnabled !== false ? round2(yearTotal * taxRate) : 0;
+
+  // Account check costs
+  const checkCost = round2(checksArr
+    .filter(c => c.subId === sub.id && c.createdAt && c.createdAt.seconds && c.createdAt.seconds * 1000 >= wStart.getTime())
+    .reduce((s, c) => s + (c.amount || 0), 0));
+
+  const baseAmount = round2(loginCost + timeCost + taxAmount + checkCost);
+
+  return {
+    logins, closedSeconds, liveSeconds, totalSeconds,
+    loginCost, timeCost, taxAmount, checkCost,
+    yearTotal, baseAmount,
+    perLogin, perSec, taxRate
+  };
+}
 
 
 // =============================================
@@ -212,13 +338,26 @@ function logout() {
   if (liveInterval) { clearInterval(liveInterval); liveInterval = null; }
   if (currentSessionId) { closeSessionSync(currentSessionId); currentSessionId = null; currentSessionStart = 0; }
   window.removeEventListener('beforeunload', handleBeforeUnload);
+  document.removeEventListener('visibilitychange', handleVisibilityChange);
   if (unsubscribePayments) { unsubscribePayments(); unsubscribePayments = null; }
   if (unsubscribeSubs) { unsubscribeSubs(); unsubscribeSubs = null; }
   if (unsubscribeSessions) { unsubscribeSessions(); unsubscribeSessions = null; }
   if (unsubscribeFagTaxes) { unsubscribeFagTaxes(); unsubscribeFagTaxes = null; }
-  currentUser = null; payments = []; subs = []; sessions = []; fagTaxes = [];
+  if (unsubscribeAccountChecks) { unsubscribeAccountChecks(); unsubscribeAccountChecks = null; }
+  currentUser = null; payments = []; subs = []; sessions = []; fagTaxes = []; accountChecks = [];
+  filterSubId = 'all'; // #16: Reset filter on logout
+  lastCheckSessions = null; // #18: Clear cached sessions
   try { localStorage.removeItem('findom_session'); } catch (_) {}
+  cleanupDynamicSubUI(); // #1: Remove dynamically inserted Sub-UI elements
   showLoginView();
+}
+
+// #1: Clean up dynamically inserted Sub-UI elements
+function cleanupDynamicSubUI() {
+  const subUI = document.getElementById('sub-fagtax-ui');
+  const subHistory = document.getElementById('sub-fagtax-history');
+  if (subUI) subUI.remove();
+  if (subHistory) subHistory.remove();
 }
 
 // =============================================
@@ -242,6 +381,7 @@ async function startSession() {
     if (heartbeatInterval) clearInterval(heartbeatInterval);
     heartbeatInterval = setInterval(() => heartbeat(), 30000);
     window.addEventListener('beforeunload', handleBeforeUnload);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
   } catch (e) { console.error('Session start error:', e); }
 }
 
@@ -256,6 +396,14 @@ async function heartbeat() {
 
 function handleBeforeUnload() {
   if (currentSessionId) {
+    closeSessionSync(currentSessionId);
+  }
+}
+
+// #2: Use visibilitychange for more reliable session closing
+function handleVisibilityChange() {
+  if (document.visibilityState === 'hidden' && currentSessionId && db) {
+    // Try to close session when tab becomes hidden
     closeSessionSync(currentSessionId);
   }
 }
@@ -333,7 +481,8 @@ async function closeStaleSessions() {
   } catch (_) {}
 }
 
-function startAllSessionsListener() {
+// #5: Renamed from startAllSessionsListener — this is a one-time fetch, not a listener
+function fetchAllSessions() {
   if (unsubscribeSessions) unsubscribeSessions();
   if (!currentUser || currentUser.role !== 'dom') return;
   const weekStart = getLastFriday();
@@ -397,19 +546,29 @@ function showLoginView() {
 function showDashboardView() {
   viewLogin.style.display = 'none'; viewDashboard.style.display = 'flex';
   dashboardMain.style.display = 'flex'; setupMessage.style.display = 'none';
+  cleanupDynamicSubUI(); // #1: Always clean up before rendering new view
   renderDashboard();
   startPaymentListener();
   if (currentUser.role === 'dom') {
     startSubsListener();
     startFagTaxesListener();
-    startAllSessionsListener();
+    fetchAllSessions(); // #5: Renamed from startAllSessionsListener
     startAccountChecksListener();
     setTimeout(() => autoCreateFagTaxes(), 3000);
   }
   if (currentUser.role === 'sub') {
+    startSubsListener(); // Needed so subCheckAccount can find the sub in the subs array
     startFagTaxesListener();
-    showLoginMessage();
+    startAccountChecksListener();
     renderSubFagTaxView();
+    // #20: Delay showLoginMessage until subs data is available
+    const waitForSubs = setInterval(() => {
+      if (subs.length > 0 || !db) {
+        clearInterval(waitForSubs);
+        showLoginMessage();
+      }
+    }, 200);
+    setTimeout(() => clearInterval(waitForSubs), 5000); // Safety timeout
   }
 }
 
@@ -455,22 +614,10 @@ function startSubsListener() {
       renderSubs();
       populateSubSelects();
       renderFagTaxOverview();
-      ensureDefaultSub();
     }, err => console.warn('Subs listener error:', err.message));
 }
 
-async function ensureDefaultSub() {
-  if (subs.length > 0) return;
-  try {
-    await db.collection('subs').add({
-      username: 'c6skinslave', password: 'sub123',
-      displayName: 'C6 Skin Slave',
-      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-      active: true,
-      fagTax: { ...FAG_CONFIG_DEFAULTS }
-    });
-  } catch (e) { console.error(e); }
-}
+// ensureDefaultSub removed (#17) — no longer auto-creates hardcoded sub
 
 async function addSub(username, password, displayName) {
   try {
@@ -547,12 +694,7 @@ function startFagTaxesListener() {
   }, err => console.warn('FagTax listener error:', err.message));
 }
 
-function getWeekStart() {
-  const d = new Date();
-  while (d.getDay() !== 5) d.setDate(d.getDate() - 1);
-  d.setHours(0, 0, 0, 0);
-  return d;
-}
+// getWeekStart() removed (#12) — was dead code, use getLastFriday() instead
 
 function getLastFriday() {
   const d = new Date();
@@ -613,9 +755,10 @@ function getLiveSessionSeconds() {
   return 0;
 }
 
-function calcYearTotalPayments(subId, payments) {
-  const start = new Date('2026-07-01').getTime();
-  return payments.filter(p => {
+// #11: calcYearTotalPayments now uses configurable taxStartDate
+function calcYearTotalPayments(subId, paymentsArr, taxStartDate) {
+  const start = (taxStartDate || FAG_CONFIG_DEFAULTS.taxStartDate).getTime();
+  return paymentsArr.filter(p => {
     const match = p.subId === subId;
     const ts = p.createdAt ? p.createdAt.seconds * 1000 : 0;
     return match && ts >= start;
@@ -662,20 +805,7 @@ function getDueDate(weekStartDate) {
   return d;
 }
 
-function calculateLateInterest(amount, weekStartDate, enabled = false) {
-  if (!enabled || !amount || amount <= 0) return 0;
-  const now = new Date();
-  const due = getDueDate(weekStartDate);
-  const msLate = now.getTime() - due.getTime();
-  if (msLate < 0) return 0; // still within payment period (Fri 00:00 – Fri 23:59)
-  const daysLate = Math.floor(msLate / (24 * 60 * 60 * 1000)); // 0=Fri due, 1=Sat...
-  if (daysLate < 1) return 0;
-  let total = amount;
-  for (let day = 1; day <= daysLate; day++) {
-    total += total * (day / 100);
-  }
-  return Math.round((total - amount) * 100) / 100;
-}
+// calculateLateInterest() removed (#13) — was dead code, use calculateLateInterestToDate() instead
 
 function calculateLateInterestDays(weekStartDate) {
   if (!weekStartDate) return 0;
@@ -687,13 +817,14 @@ function calculateLateInterestDays(weekStartDate) {
 }
 
 function generateCheckAmount() {
-  return 1 + Math.random() * 2;
+  // #19: Use round2 for consistent rounding
+  return round2(1 + Math.random() * 2);
 }
 
 async function subCheckAccount() {
   if (currentUser.role !== 'sub' || !db) return;
   const amount = generateCheckAmount();
-  const rounded = Math.round(amount * 100) / 100;
+  const rounded = round2(amount);
   try {
     await db.collection('accountChecks').add({
       subId: currentUser.uid,
@@ -702,57 +833,52 @@ async function subCheckAccount() {
     });
     const costStr = rounded.toFixed(2).replace('.', ',');
 
-    // Fetch current week data directly (no listener needed)
+    // Fetch current week data directly
     const weekStart = getLastFriday();
-    const [snapSessions, snapPayments] = await Promise.all([
+    const [snapSessions, snapPayments, snapChecks] = await Promise.all([
       db.collection('sessions').where('subId', '==', currentUser.uid).get(),
-      db.collection('payments').where('paidBy', '==', currentUser.username).get()
+      db.collection('payments').where('paidBy', '==', currentUser.username).get(),
+      db.collection('accountChecks').where('subId', '==', currentUser.uid).get()
     ]);
+
+    // Build session/payment/check arrays for the central function
     const weekSessions = [];
     snapSessions.forEach(d => {
-      const data = d.data();
+      const data = { id: d.id, ...d.data() };
       if (data.loginTime && data.loginTime.seconds && data.loginTime.seconds * 1000 >= weekStart.getTime()) {
         weekSessions.push(data);
       }
     });
-    const logins = weekSessions.length;
-    const totalSecs = weekSessions.reduce((sum, s) => sum + (s.durationSeconds || s.durationMinutes * 60 || 0), 0);
-    // Add live seconds for current session
-    let liveSecs = 0;
-    if (currentSessionId) {
-      const active = weekSessions.find(s => s.id === currentSessionId);
-      if (active && active.loginTime && active.loginTime.seconds && active.active !== false) {
-        liveSecs = Math.round((Date.now() - active.loginTime.seconds * 1000) / 1000);
-      }
-    }
-    const totalSeconds = totalSecs + liveSecs;
-    const yearTotal = snapPayments.docs.reduce((sum, d) => {
-      const ts = d.data().createdAt ? d.data().createdAt.seconds * 1000 : 0;
-      if (ts >= new Date('2026-07-01').getTime()) return sum + (parseFloat(d.data().amount) || 0);
-      return sum;
-    }, 0);
+    const allPayments = [];
+    snapPayments.forEach(d => allPayments.push({ id: d.id, ...d.data() }));
+    const allChecks = [];
+    snapChecks.forEach(d => allChecks.push({ id: d.id, ...d.data() }));
 
     const sub = subs.find(s => s.id === currentUser.uid);
-    const cfg = sub ? getSubFagConfig(sub) : FAG_CONFIG_DEFAULTS;
-    const perLogin = cfg.perLogin || 1;
-    const perSec = (cfg.perMinute || 1) / 60;
-    const taxRate = cfg.taxRate || 0.03;
-    const loginCost = logins * perLogin;
-    const timeCost = totalSeconds * perSec;
-    const taxAmount = yearTotal * taxRate;
-    const totalWeek = loginCost + timeCost + taxAmount + rounded; // includes this check cost
+    if (!sub) { showAlert('FEHLER', 'Sub nicht gefunden.'); return; }
 
-    const insultIndex = Math.floor(Math.random() * 8);
+    // #9/#18: Use central calculation function
+    const calc = calculateWeeklyFagTax(sub, weekStart, weekSessions, allPayments, allChecks, { includeLiveSeconds: true });
+    const totalWeek = calc.baseAmount;
+
     const insults = [
-      `Du hast diese Woche ${logins} Login(s) gehabt und warst ${formatDuration(totalSeconds)} online. Kosten: ${loginCost.toFixed(2).replace('.',',')}€ Logins + ${timeCost.toFixed(2).replace('.',',')}€ Zeit + ${taxAmount.toFixed(2).replace('.',',')}€ Steuer. GESAMT: ${totalWeek.toFixed(2).replace('.',',')}€. −${costStr}€ für diese Auskunft.`,
-      `HIER IST DEIN KONTOSTAND, LOSER: ${logins} Logins, ${formatDuration(totalSeconds)} online. ${loginCost.toFixed(2).replace('.',',')}€ + ${timeCost.toFixed(2).replace('.',',')}€ + ${taxAmount.toFixed(2).replace('.',',')}€ = ${totalWeek.toFixed(2).replace('.',',')}€. Dafür hast du ${costStr}€ bezahlt. Lächerlich.`,
-      `Du wolltest es wissen? Ja? ${logins}x eingeloggt, ${formatDuration(totalSeconds)} Rumgehangen. ${loginCost.toFixed(2).replace('.',',')}€ + ${timeCost.toFixed(2).replace('.',',')}€ + ${taxAmount.toFixed(2).replace('.',',')}€ Steuer. ${totalWeek.toFixed(2).replace('.',',')}€. −${costStr}€ Prüfgebühr. Und? Besser jetzt?`,
-      `Kontoprüfung abgeschlossen. Befund: Du bist ${logins} Mal gekrochen und warst ${formatDuration(totalSeconds)} online. Schuld: ${totalWeek.toFixed(2).replace('.',',')}€ (inkl. ${costStr}€ für diese Nachricht). Zahl einfach.`,
+      `Du hast diese Woche ${calc.logins} Login(s) gehabt und warst ${formatDuration(calc.totalSeconds)} online. Kosten: ${calc.loginCost.toFixed(2).replace('.',',')}€ Logins + ${calc.timeCost.toFixed(2).replace('.',',')}€ Zeit + ${calc.taxAmount.toFixed(2).replace('.',',')}€ Steuer + ${calc.checkCost.toFixed(2).replace('.',',')}€ Prüfungen. GESAMT: ${totalWeek.toFixed(2).replace('.',',')}€. −${costStr}€ für diese Auskunft.`,
+      `HIER IST DEIN KONTOSTAND, LOSER: ${calc.logins} Logins, ${formatDuration(calc.totalSeconds)} online. ${calc.loginCost.toFixed(2).replace('.',',')}€ + ${calc.timeCost.toFixed(2).replace('.',',')}€ + ${calc.taxAmount.toFixed(2).replace('.',',')}€ + ${calc.checkCost.toFixed(2).replace('.',',')}€ = ${totalWeek.toFixed(2).replace('.',',')}€. Dafür hast du ${costStr}€ bezahlt. Lächerlich.`,
+      `Du wolltest es wissen? Ja? ${calc.logins}x eingeloggt, ${formatDuration(calc.totalSeconds)} Rumgehangen. ${calc.loginCost.toFixed(2).replace('.',',')}€ + ${calc.timeCost.toFixed(2).replace('.',',')}€ + ${calc.taxAmount.toFixed(2).replace('.',',')}€ Steuer + ${calc.checkCost.toFixed(2).replace('.',',')}€ Prüfungen. ${totalWeek.toFixed(2).replace('.',',')}€. −${costStr}€ Prüfgebühr. Und? Besser jetzt?`,
+      `Kontoprüfung abgeschlossen. Befund: Du bist ${calc.logins} Mal gekrochen und warst ${formatDuration(calc.totalSeconds)} online. Schuld: ${totalWeek.toFixed(2).replace('.',',')}€ (inkl. ${costStr}€ für diese Nachricht). Zahl einfach.`,
+      `${calc.logins} Logins. ${formatDuration(calc.totalSeconds)} verschwendete Zeit. ${totalWeek.toFixed(2).replace('.',',')}€ Schulden. Plus ${costStr}€ weil du zu dumm bist, dir die Zahlen selbst zu merken. Fertig.`,
+      `Abrechnungsbericht für Loser #${calc.logins}: ${calc.loginCost.toFixed(2).replace('.',',')}€ Login-Gebühr, ${calc.timeCost.toFixed(2).replace('.',',')}€ für dein sinnloses Rumstarren, ${calc.taxAmount.toFixed(2).replace('.',',')}€ Steuer, ${calc.checkCost.toFixed(2).replace('.',',')}€ Prüfungskosten. Macht ${totalWeek.toFixed(2).replace('.',',')}€. Diese Auskunft: ${costStr}€. Gern geschehen, Idiot.`,
+      `Du hast den Knopf gedrückt, also kriegst du die Wahrheit: ${calc.logins}x eingeloggt, ${formatDuration(calc.totalSeconds)} online, ${totalWeek.toFixed(2).replace('.',',')}€ aufgelaufen. Dazu ${costStr}€ Gebühr. Dein Konto leert sich und du drückst trotzdem weiter. Hoffnungsloser Fall.`,
+      `STATUSBERICHT: ${calc.logins} Logins, ${formatDuration(calc.totalSeconds)} am Bildschirm geklebt. ${calc.loginCost.toFixed(2).replace('.',',')}€ + ${calc.timeCost.toFixed(2).replace('.',',')}€ + ${calc.taxAmount.toFixed(2).replace('.',',')}€ + ${calc.checkCost.toFixed(2).replace('.',',')}€ = ${totalWeek.toFixed(2).replace('.',',')}€. Und jetzt noch −${costStr}€ obendrauf. Du bist wirklich zu blöd zum Sparen.`,
+      `Willst du heulen? ${totalWeek.toFixed(2).replace('.',',')}€ diese Woche. ${calc.logins} Mal eingeloggt, ${formatDuration(calc.totalSeconds)} geglotzt. Jeder Login kostet. Jede Sekunde kostet. Sogar diese Nachricht kostet dich ${costStr}€. Tja.`,
+      `Kontostand: ERBÄRMLICH. ${calc.logins} Logins × ${calc.loginCost.toFixed(2).replace('.',',')}€ + ${formatDuration(calc.totalSeconds)} × ${calc.timeCost.toFixed(2).replace('.',',')}€ + ${calc.taxAmount.toFixed(2).replace('.',',')}€ Fag-Steuer + ${calc.checkCost.toFixed(2).replace('.',',')}€ Prüfgebühren. Summe: ${totalWeek.toFixed(2).replace('.',',')}€. Extra −${costStr}€ für diese Abfrage. Du finanzierst deine eigene Demütigung.`,
     ];
-    const msg = insults[insultIndex % insults.length];
+    const insultIndex = Math.floor(Math.random() * insults.length);
+    const msg = insults[insultIndex];
     showAlert('🐷 KONTOPRÜFUNG', msg);
 
-    window.__ftSessions = weekSessions;
+    // #18: Store sessions for renderSubFagTaxCounters (replaces window.__ftSessions)
+    lastCheckSessions = weekSessions;
     renderSubFagTaxCounters();
   } catch (e) {
     showAlert('FEHLER', 'Fehler bei Kontoprüfung. Versuch es nochmal, Loser.');
@@ -771,17 +897,10 @@ async function autoCreateFagTaxes() {
   if (activeSubs.length === 0) return;
 
   for (const sub of activeSubs) {
-    const cfg = getSubFagConfig(sub);
     const subSessions = await fetchSubSessions(sub.id);
-    const logins = cfg.loginsEnabled ? countWeeklyLogins(sub.id, subSessions) : 0;
-    const seconds = cfg.minutesEnabled ? sumWeeklySeconds(sub.id, subSessions) : 0;
-    const yearTotal = cfg.taxEnabled ? calcYearTotalPayments(sub.id, payments) : 0;
-    const loginCost = logins * (cfg.perLogin || 1);
-    const perSec = (cfg.perMinute || 1) / 60;
-    const minuteCost = seconds * perSec;
-    const taxAmount = yearTotal * (cfg.taxRate || 0.03);
-    const baseAmount = loginCost + minuteCost + taxAmount;
-    if (baseAmount <= 0) continue;
+    // #3/#9: Use central calculation function (now includes checkCost)
+    const calc = calculateWeeklyFagTax(sub, weekStart, subSessions, payments, accountChecks);
+    if (calc.baseAmount <= 0) continue;
 
     // Carried interest from previous PAID FagTax (interest generated when marking paid)
     const prevFTs = fagTaxes
@@ -794,7 +913,7 @@ async function autoCreateFagTaxes() {
       carriedInterest.push({ sourceKW: String(prevKW), amount: prevFT.interestAmount });
     }
     const carriedSum = carriedInterest.reduce((s, c) => s + c.amount, 0);
-    const totalAmount = Math.round((baseAmount + carriedSum) * 100) / 100;
+    const totalAmount = round2(calc.baseAmount + carriedSum);
     if (totalAmount <= 0) continue;
 
     try {
@@ -802,9 +921,10 @@ async function autoCreateFagTaxes() {
         subId: sub.id, username: sub.username,
         displayName: sub.displayName || sub.username,
         weekStart: weekStart,
-        loginsCount: logins, minutesCount: Math.ceil(seconds / 60),
-        secondsCount: seconds, loginCost, minuteCost,
-        yearTotal, taxAmount, baseAmount,
+        loginsCount: calc.logins, minutesCount: Math.ceil(calc.totalSeconds / 60),
+        secondsCount: calc.totalSeconds, loginCost: calc.loginCost, minuteCost: calc.timeCost,
+        yearTotal: calc.yearTotal, taxAmount: calc.taxAmount, checkCost: calc.checkCost,
+        baseAmount: calc.baseAmount,
         carriedInterest: carriedInterest.length > 0 ? carriedInterest : [],
         totalAmount,
         lateInterest: false, paid: false, paidAt: null,
@@ -821,24 +941,32 @@ async function markFagTaxPaid(ft) {
   const ws = ft.weekStart && ft.weekStart.seconds ? new Date(ft.weekStart.seconds * 1000) : new Date(ft.weekStart);
   const dueDate = getDueDate(ws);
   const kw = getKW(ws);
-  const baseAmount = ft.baseAmount || ft.totalAmount || 0;
+  // #15: Recalculate baseAmount to ensure checkCost is included
+  // For newer FagTaxes (with checkCost stored), use stored value; otherwise recalculate
+  let baseAmount = ft.baseAmount || ft.totalAmount || 0;
+  if (ft.checkCost === undefined && sub) {
+    // Old FagTax without checkCost — recalculate
+    const ftWS = ft.weekStart?.seconds ? new Date(ft.weekStart.seconds * 1000) : ws;
+    const storedCheckCost = sumWeeklyChecks(sub.id, ftWS);
+    baseAmount = round2(baseAmount + storedCheckCost);
+  }
   const carried = ft.carriedInterest || [];
   const carriedSum = carried.reduce((s, c) => s + (c.amount || 0), 0);
-  const billTotal = Math.round((baseAmount + carriedSum) * 100) / 100;
+  const billTotal = round2(baseAmount + carriedSum);
   const todayStr = new Date().toISOString().split('T')[0];
   const dueStr = dueDate.toISOString().split('T')[0];
 
   // Build carried interest breakdown HTML
   let carriedHTML = '';
   for (const ci of carried) {
-    carriedHTML += `<div style="display:flex;justify-content:space-between;font-size:0.65rem;color:var(--purple);padding-left:8px">
+    carriedHTML += `<div style="display:flex;justify-content:space-between;font-size:0.75rem;color:var(--purple);padding-left:8px">
       <span>↳ Zinsen aus Rechnung KW ${ci.sourceKW}:</span><span style="font-weight:900">${(ci.amount || 0).toFixed(2).replace('.',',')}€</span>
     </div>`;
   }
 
   let bodyHTML = `
     <p style="margin-bottom:12px;font-weight:700;font-size:1.1rem">FAG-TAX KW ${kw} — ${escapeHtml(sub.displayName || sub.username)}</p>
-    <p style="font-size:0.7rem;color:var(--text-dim);margin-bottom:8px">Fällig am: <strong>${dueDate.toLocaleDateString('de-DE')}</strong> (Freitag)</p>
+    <p style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:8px">Fällig am: <strong>${dueDate.toLocaleDateString('de-DE')}</strong> (Freitag)</p>
     <div style="margin-bottom:16px;padding:12px;background:var(--bg-hover);border-radius:8px">
       <div style="display:flex;justify-content:space-between;margin-bottom:6px">
         <span>Basis (Logins+Zeit+Steuer):</span><span style="font-weight:900">${baseAmount.toFixed(2).replace('.', ',')}€</span>
@@ -1250,8 +1378,14 @@ async function addPayment(amount, category, description, subId, dateStr) {
     createdAt = firebase.firestore.FieldValue.serverTimestamp();
   }
   try {
+    const parsedAmount = parseFloat(amount);
+    // #19: Validate amount range
+    if (isNaN(parsedAmount) || parsedAmount <= 0 || parsedAmount > 100000) {
+      console.warn('Invalid payment amount:', amount);
+      return false;
+    }
     await db.collection('payments').add({
-      amount: parseFloat(amount), category, description: description.trim(),
+      amount: round2(parsedAmount), category, description: description.trim(),
       createdAt,
       paidBy, subId: subId || null, createdBy: currentUser.role
     });
@@ -1348,8 +1482,9 @@ function updateTotals() {
   const allFormatted = allTotal.toFixed(2).replace('.', ',') + '€';
   const msgs = currentUser.role === 'dom' ? DEGRADING.dom : DEGRADING.sub;
   const useTotal = currentUser.role === 'dom' ? allTotal : total;
-  let matched = msgs[msgs.length - 1].msg;
-  for (const m of msgs) { if (useTotal >= m.min && useTotal < m.max) { matched = m.msg; break; } }
+  let matchedArr = msgs[msgs.length - 1].msg;
+  for (const m of msgs) { if (useTotal >= m.min && useTotal < m.max) { matchedArr = m.msg; break; } }
+  const matched = Array.isArray(matchedArr) ? matchedArr[Math.floor(Math.random() * matchedArr.length)] : matchedArr;
   if (currentUser.role === 'dom') {
     const name = subLabel || 'dein Schwein';
     dashMessage.innerHTML = total > 0
@@ -1478,18 +1613,37 @@ function showSubFagTaxDetails(subId, ftWeekStart, ftId) {
   const weekStart = ftWeekStart ? new Date(ftWeekStart) : getLastFriday();
   const ft = ftId ? fagTaxes.find(f => f.id === ftId) : null;
 
-  const logins = ft ? (ft.loginsCount || 0) : 0;
-  const storedSecs = ft ? (ft.secondsCount || 0) : 0;
-  const yearTotal = calcYearTotalPayments(sub.id, payments);
-  const checkSum = sumWeeklyChecks(sub.id, weekStart);
-
-  const perLogin = cfg.perLogin || 1;
-  const perSec = (cfg.perMinute || 1) / 60;
-  const taxRate = cfg.taxRate || 0.03;
-  const loginCost = logins * perLogin;
-  const timeCost = storedSecs * perSec;
-  const taxAmount = yearTotal * taxRate;
-  const totalWeek = Math.round((loginCost + timeCost + taxAmount + checkSum) * 100) / 100;
+  // #9: Use stored FagTax values when available, otherwise use central function
+  let logins, storedSecs, loginCost, timeCost, taxAmount, checkSum, totalWeek, yearTotal, perLogin, perSec, taxRate;
+  if (ft) {
+    // Use stored values from the FagTax document
+    logins = ft.loginsCount || 0;
+    storedSecs = ft.secondsCount || 0;
+    loginCost = ft.loginCost || 0;
+    timeCost = ft.minuteCost || 0;
+    taxAmount = ft.taxAmount || 0;
+    yearTotal = ft.yearTotal || 0;
+    const ftWS = ft.weekStart?.seconds ? new Date(ft.weekStart.seconds * 1000) : weekStart;
+    checkSum = ft.checkCost !== undefined ? ft.checkCost : sumWeeklyChecks(sub.id, ftWS);
+    totalWeek = round2(loginCost + timeCost + taxAmount + checkSum);
+    perLogin = cfg.perLogin || 1;
+    perSec = (cfg.perMinute || 1) / 60;
+    taxRate = cfg.taxRate || 0.03;
+  } else {
+    // No stored FagTax — calculate live
+    const calc = calculateWeeklyFagTax(sub, weekStart, sessions, payments, accountChecks);
+    logins = calc.logins;
+    storedSecs = calc.totalSeconds;
+    loginCost = calc.loginCost;
+    timeCost = calc.timeCost;
+    taxAmount = calc.taxAmount;
+    checkSum = calc.checkCost;
+    yearTotal = calc.yearTotal;
+    totalWeek = calc.baseAmount;
+    perLogin = calc.perLogin;
+    perSec = calc.perSec;
+    taxRate = calc.taxRate;
+  }
 
   const fmt = v => v.toFixed(2).replace('.', ',') + '€';
   const durationStr = formatDuration(storedSecs);
@@ -1498,7 +1652,7 @@ function showSubFagTaxDetails(subId, ftWeekStart, ftId) {
   const weekLabel = ftWeekStart ? `KW ${kw}` : `KW ${kw} (aktuell)`;
   showModal('🐷 ' + escapeHtml(name) + ' – ' + weekLabel, `
     <div class="modal-fagtax-details" style="max-width:420px">
-      <div style="font-size:0.7rem;color:var(--text-dim);margin-bottom:1rem">${weekLabel}</div>
+      <div style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:1rem">${weekLabel}</div>
       <div class="fagtax-details-grid">
         <div class="fagtax-detail-card">
           <div class="fagtax-detail-label">👤 Logins</div>
@@ -1558,7 +1712,7 @@ function renderFagTaxOverview() {
   html += '<h4>📊 FAG-TAX ÜBERSICHT (ALLE WOCHEN)</h4>';
 
   // Wochenabschluss button
-  html += `<div style="margin:10px 0;text-align:center"><button id="btn-week-close" class="btn btn--primary" style="font-size:0.7rem">📅 AKTUELLE WOCHE BERECHNEN</button></div>`;
+  html += `<div style="margin:10px 0;text-align:center"><button id="btn-week-close" class="btn btn--primary" style="font-size:0.8rem">📅 AKTUELLE WOCHE BERECHNEN</button></div>`;
 
   // Export unpaid button
   const unpaid = fagTaxes.filter(f => !f.paid);
@@ -1575,10 +1729,10 @@ function renderFagTaxOverview() {
     const weStr = wsDate.toLocaleDateString('de-DE');
 
     html += `<div class="ft-week-group" style="margin-bottom:20px;padding:12px;background:var(--bg-hover);border-radius:8px;border:1px solid var(--border)">`;
-    html += `<h5 style="margin:0 0 10px 0;font-size:0.8rem;letter-spacing:2px">📅 KW ${kw} <span style="font-weight:400;color:var(--text-dim)">(${wsStr} – ${weStr})</span></h5>`;
+    html += `<h5 style="margin:0 0 10px 0;font-size:0.9rem;letter-spacing:2px">📅 KW ${kw} <span style="font-weight:400;color:var(--text-secondary)">(${wsStr} – ${weStr})</span></h5>`;
 
     // Table for this week
-    html += `<table class="fagtax-table" style="font-size:0.65rem"><thead><tr>
+    html += `<table class="fagtax-table" style="font-size:0.75rem"><thead><tr>
       <th>SAU</th><th>€ BASIS</th><th>€ ZINSEN</th><th>GESAMT</th><th>STATUS</th><th>AKTIONEN</th>
     </tr></thead><tbody>`;
 
@@ -1590,25 +1744,17 @@ function renderFagTaxOverview() {
       const name = sub ? (sub.displayName || sub.username) : (ft.displayName || ft.username || '?');
       const isPaid = ft.paid;
 
-      // For unpaid FagTaxes, recalculate baseAmount from live data
+      // #9: For unpaid FagTaxes, use stored baseAmount but ensure checkCost is included
       let baseAmount;
       if (isPaid) {
         baseAmount = ft.baseAmount || ft.totalAmount || 0;
       } else {
-        if (sub) {
-          const cfg = getSubFagConfig(sub);
-          const logins = ft.loginsCount || 0;
-          const seconds = ft.secondsCount || 0;
-          const yearTotal = calcYearTotalPayments(sub.id, payments);
-          const loginCost = logins * (cfg.perLogin || 1);
-          const perSec = (cfg.perMinute || 1) / 60;
-          const minuteCost = seconds * perSec;
-          const taxAmount = yearTotal * (cfg.taxRate || 0.03);
+        baseAmount = ft.baseAmount || ft.totalAmount || 0;
+        // Add checkCost if it wasn't stored in this FagTax (backward compat)
+        if (ft.checkCost === undefined && sub) {
           const ftWS = ft.weekStart?.seconds ? new Date(ft.weekStart.seconds * 1000) : null;
           const checkCost = sumWeeklyChecks(sub.id, ftWS);
-          baseAmount = Math.round((loginCost + minuteCost + taxAmount + checkCost) * 100) / 100;
-        } else {
-          baseAmount = ft.baseAmount || ft.totalAmount || 0;
+          baseAmount = round2(baseAmount + checkCost);
         }
       }
 
@@ -1626,11 +1772,11 @@ function renderFagTaxOverview() {
         if (paidIntAmt > 0) {
           intColHTML = `<span style="color:var(--purple);font-weight:900">${paidIntAmt.toFixed(2).replace('.',',')}€</span>`;
         } else {
-          intColHTML = '<span style="color:var(--text-dim);font-size:0.5rem">—</span>';
+          intColHTML = '<span style="color:var(--text-dim);font-size:0.65rem">—</span>';
         }
       } else if (carried.length > 0) {
         const lines = carried.map(c =>
-          `<div style="font-size:0.5rem;line-height:1.4">Zinsen KW ${c.sourceKW}: <strong>${(c.amount || 0).toFixed(2).replace('.',',')}€</strong></div>`
+          `<div style="font-size:0.65rem;line-height:1.4">Zinsen KW ${c.sourceKW}: <strong>${(c.amount || 0).toFixed(2).replace('.',',')}€</strong></div>`
         ).join('');
         intColHTML = `<div style="color:var(--purple);font-weight:700">${lines}</div>`;
       }
@@ -1658,7 +1804,7 @@ function renderFagTaxOverview() {
       html += `<tr>
         <td><span class="ft-sub-link" data-subid="${ft.subId}" data-ftid="${ft.id}" data-weekstart="${ft.weekStart?.seconds ? ft.weekStart.seconds * 1000 : ''}" style="cursor:pointer;border-bottom:1px dashed var(--text-dim)">🐷 ${escapeHtml(name)}</span></td>
         <td>${baseStr}</td>
-        <td style="font-size:0.6rem">${intColHTML}</td>
+        <td style="font-size:0.7rem">${intColHTML}</td>
         <td style="color:var(--red);font-weight:900">${totalStr}</td>
         <td>${statusStr}</td>
         <td style="white-space:nowrap">${actionsStr}</td>
@@ -1671,44 +1817,47 @@ function renderFagTaxOverview() {
   html += '</div>';
   fagTaxOverview.innerHTML = html;
 
-  // Event handlers
-  fagTaxOverview.querySelectorAll('.btn--sm.btn--success').forEach(b => {
-    b.addEventListener('click', () => {
-      const ft = fagTaxes.find(f => f.id === b.dataset.ftid);
-      if (ft) markFagTaxPaid(ft);
-    });
-  });
+  // #6: Event delegation — single handler on container instead of per-element listeners
+  fagTaxOverview.onclick = (e) => {
+    const target = e.target.closest('[data-ftid], .ft-sub-link, #btn-week-close, #btn-export-unpaid');
+    if (!target) return;
 
-  fagTaxOverview.querySelectorAll('.btn--sm.btn--cyan').forEach(b => {
-    b.addEventListener('click', () => {
-      const ft = fagTaxes.find(f => f.id === b.dataset.ftid);
-      if (ft) exportSingleFagTaxInvoice(ft);
-    });
-  });
-
-  fagTaxOverview.querySelectorAll('.ft-sub-link').forEach(el => {
-    el.addEventListener('click', e => {
+    // Sub name link → show details
+    if (target.classList.contains('ft-sub-link')) {
       e.preventDefault();
-      const ws = el.dataset.weekstart ? parseInt(el.dataset.weekstart) : null;
-      showSubFagTaxDetails(el.dataset.subid, ws, el.dataset.ftid);
-    });
-  });
+      const ws = target.dataset.weekstart ? parseInt(target.dataset.weekstart) : null;
+      showSubFagTaxDetails(target.dataset.subid, ws, target.dataset.ftid);
+      return;
+    }
 
-  const btnWeekClose = document.getElementById('btn-week-close');
-  if (btnWeekClose) {
-    btnWeekClose.addEventListener('click', async () => {
-      btnWeekClose.disabled = true;
-      btnWeekClose.textContent = '⏳ BERECHNE...';
-      await autoCreateFagTaxes();
-      btnWeekClose.textContent = '📅 AKTUELLE WOCHE BERECHNEN';
-      btnWeekClose.disabled = false;
-      showToast('Fag-Tax für aktuelle Woche berechnet', 'success');
-    });
-  }
+    // "BEZAHLT" button
+    if (target.classList.contains('btn--success') && target.dataset.ftid) {
+      const ft = fagTaxes.find(f => f.id === target.dataset.ftid);
+      if (ft) markFagTaxPaid(ft);
+      return;
+    }
 
-  const btnExport = document.getElementById('btn-export-unpaid');
-  if (btnExport) {
-    btnExport.addEventListener('click', () => {
+    // "EXPORT" button (per row)
+    if (target.classList.contains('btn--cyan') && target.dataset.ftid) {
+      const ft = fagTaxes.find(f => f.id === target.dataset.ftid);
+      if (ft) exportSingleFagTaxInvoice(ft);
+      return;
+    }
+
+    // "WOCHE BERECHNEN" button
+    if (target.id === 'btn-week-close') {
+      target.disabled = true;
+      target.textContent = '⏳ BERECHNE...';
+      autoCreateFagTaxes().then(() => {
+        target.textContent = '📅 AKTUELLE WOCHE BERECHNEN';
+        target.disabled = false;
+        showToast('Fag-Tax für aktuelle Woche berechnet', 'success');
+      });
+      return;
+    }
+
+    // "ALLE OFFENEN EXPORTIEREN" button
+    if (target.id === 'btn-export-unpaid') {
       const unpaidFTs = fagTaxes.filter(f => !f.paid);
       if (unpaidFTs.length === 0) return;
       if (unpaidFTs.length > 5) {
@@ -1717,26 +1866,55 @@ function renderFagTaxOverview() {
       } else {
         unpaidFTs.forEach(ft => exportSingleFagTaxInvoice(ft));
       }
-    });
-  }
+    }
+  };
 }
 
-function exportSingleFagTaxInvoice(ft) {
+async function exportSingleFagTaxInvoice(ft) {
   if (!ft) return;
   const sub = subs.find(s => s.id === ft.subId);
   if (!sub) return;
-  const cfg = getSubFagConfig(sub);
-  const logins = ft.loginsCount || 0;
-  const seconds = ft.secondsCount || ft.minutesCount * 60 || 0;
-  const loginCost = ft.loginCost || 0;
-  const minuteCost = ft.minuteCost || 0;
-  const taxAmount = ft.taxAmount || 0;
-  const checkCost = 0;
-  const baseAmount = ft.baseAmount || ft.totalAmount || 0;
+
+  // For PAID FagTaxes, use stored values (they're final)
+  if (ft.paid) {
+    const logins = ft.loginsCount || 0;
+    const seconds = ft.secondsCount || (ft.minutesCount || 0) * 60 || 0;
+    const loginCost = ft.loginCost || 0;
+    const minuteCost = ft.minuteCost || 0;
+    const taxAmount = ft.taxAmount || 0;
+    const checkCost = ft.checkCost !== undefined ? ft.checkCost : 0;
+    const baseAmount = ft.baseAmount || ft.totalAmount || 0;
+    const carried = ft.carriedInterest || [];
+    const totalAmount = ft.totalAmount || baseAmount;
+    const interestAmount = ft.interestAmount || 0;
+    generateFagTaxInvoice(sub, logins, seconds, loginCost, minuteCost, taxAmount, checkCost, interestAmount, totalAmount, ft, carried, baseAmount);
+    return;
+  }
+
+  // For UNPAID FagTaxes, live-calculate from current data
+  const ftWS = ft.weekStart?.seconds ? new Date(ft.weekStart.seconds * 1000) : getLastFriday();
+
+  // Fetch fresh sessions for this sub
+  let subSessions = [];
+  try {
+    const snap = await db.collection('sessions').where('subId', '==', sub.id).get();
+    snap.forEach(d => {
+      const data = { id: d.id, ...d.data() };
+      if (data.loginTime && data.loginTime.seconds && data.loginTime.seconds * 1000 >= ftWS.getTime()) {
+        subSessions.push(data);
+      }
+    });
+  } catch (e) {
+    console.warn('Session fetch for invoice failed:', e.message);
+  }
+
+  const calc = calculateWeeklyFagTax(sub, ftWS, subSessions, payments, accountChecks, { includeLiveSeconds: false });
   const carried = ft.carriedInterest || [];
-  const totalAmount = ft.totalAmount || baseAmount;
+  const carriedSum = carried.reduce((s, c) => s + (c.amount || 0), 0);
+  const totalAmount = round2(calc.baseAmount + carriedSum);
   const interestAmount = ft.interestAmount || 0;
-  generateFagTaxInvoice(sub, logins, seconds, loginCost, minuteCost, taxAmount, checkCost, interestAmount, totalAmount, ft, carried, baseAmount);
+
+  generateFagTaxInvoice(sub, calc.logins, calc.totalSeconds, calc.loginCost, calc.timeCost, calc.taxAmount, calc.checkCost, interestAmount, totalAmount, ft, carried, calc.baseAmount);
 }
 
 // =============================================
@@ -1764,39 +1942,13 @@ function renderSubFagTaxView() {
     liveInterval = null;
   }
 
-  // Get current open Fag-Tax for display hint
-  const currentFT = fagTaxes.find(f => !f.paid && f.subId === currentUser.uid);
-  let openHint = '';
-  if (currentFT) {
-    const baseAmt = currentFT.baseAmount || currentFT.totalAmount || 0;
-    const carried = currentFT.carriedInterest || [];
-    const carriedSum = carried.reduce((s, c) => s + (c.amount || 0), 0);
-    const total = baseAmt + carriedSum;
-    const ws = currentFT.weekStart ? (currentFT.weekStart.seconds ? new Date(currentFT.weekStart.seconds * 1000) : currentFT.weekStart) : null;
-    const kw = getKW(ws);
-
-    let detailLines = '';
-    if (carried.length > 0) {
-      detailLines = carried.map(c =>
-        `<div style="font-size:0.6rem;color:var(--purple)">↳ Zinsen aus KW ${c.sourceKW}: ${(c.amount || 0).toFixed(2).replace('.',',')}€</div>`
-      ).join('');
-    }
-    openHint = `<div class="ft-current-bill" style="margin-bottom:16px">
-      <div class="ft-bill-label">📄 OFFENE FAG-TAX (KW ${kw})</div>
-      <div style="font-size:0.65rem;color:var(--text-dim);margin:4px 0">Basis: ${baseAmt.toFixed(2).replace('.',',')}€</div>
-      ${detailLines}
-      <div class="ft-bill-amount">${total.toFixed(2).replace('.', ',')}€</div>
-      <div class="ft-bill-detail">${carriedSum > 0 ? 'inkl. Verzugszinsen aus VORWOCHEN' : 'noch nicht bezahlt'}</div>
-    </div>`;
-  }
-
-  // Build Fag-Tax section (no counters, only button + history)
+  // Build Fag-Tax section (no counters, no open FagTax preview — only button + history)
+  // Open FagTax info is only shown after clicking KONTO PRÜFEN
   let html = `
     <section class="sub-fagtax-section" id="sub-fagtax-ui">
       <h3>💰 F A G - T A X</h3>
-      ${openHint}
       <div style="text-align:center;padding:8px 0 16px 0">
-        <p style="font-family:var(--font);font-size:0.65rem;color:var(--text-dim);font-weight:700;letter-spacing:2px;margin-bottom:12px">
+        <p style="font-family:var(--font);font-size:0.8rem;color:var(--text-secondary);font-weight:700;letter-spacing:2px;margin-bottom:12px">
           Du willst wissen, wie tief du diese Woche schon steckst?<br>Dafür zahlst du. Neugier hat ihren Preis.
         </p>
         <button id="btn-sub-check-account" class="btn-check-account">🔍 KONTO PRÜFEN (1–3€ GEBÜHR)</button>
@@ -1821,31 +1973,23 @@ function renderSubFagTaxCounters() {
   if (currentUser.role !== 'sub') return;
 
   const sub = subs.find(s => s.id === currentUser.uid);
-  const cfg = sub ? getSubFagConfig(sub) : FAG_CONFIG_DEFAULTS;
+  if (!sub) return;
+  const cfg = getSubFagConfig(sub);
 
-  // Fetch current week data
+  // #18: Use lastCheckSessions instead of window.__ftSessions
   const weekStart = getLastFriday();
   const subSessions = [];
-  if (window.__ftSessions) {
-    window.__ftSessions.forEach(s => {
+  if (lastCheckSessions) {
+    lastCheckSessions.forEach(s => {
       if (s.loginTime && s.loginTime.seconds && s.loginTime.seconds * 1000 >= weekStart.getTime()) {
         subSessions.push(s);
       }
     });
   }
 
-  const logins = subSessions.length;
-  const closedSecs = subSessions.reduce((sum, s) => sum + (s.durationSeconds || s.durationMinutes * 60 || 0), 0);
-  const liveSecs = cfg.minutesEnabled ? getLiveSessionSeconds() : 0;
-  const totalSecs = closedSecs + liveSecs;
-
-  const loginCost = logins * (cfg.perLogin || 1);
-  const perSec = (cfg.perMinute || 1) / 60;
-  const timeCost = totalSecs * perSec;
-  const yearTotal = calcYearTotalPayments(currentUser.uid, payments);
-  const taxAmount = yearTotal * (cfg.taxRate || 0.03);
-  const checkCost = sumWeeklyChecks(currentUser.uid);
-  const totalNow = loginCost + timeCost + taxAmount + checkCost;
+  // #9: Use central calculation function
+  const calc = calculateWeeklyFagTax(sub, weekStart, subSessions, payments, accountChecks, { includeLiveSeconds: true });
+  const totalNow = calc.baseAmount;
 
   const currentFT = fagTaxes.find(f => !f.paid && f.subId === currentUser.uid);
   let carriedSum = 0;
@@ -1855,44 +1999,43 @@ function renderSubFagTaxCounters() {
     carriedSum = carriedArr.reduce((s, c) => s + (c.amount || 0), 0);
     if (carriedArr.length > 0) {
       carriedLines = carriedArr.map(c =>
-        `<div style="font-size:0.5rem;color:var(--purple)">Zinsen aus KW ${c.sourceKW}: +${(c.amount || 0).toFixed(2).replace('.',',')}€</div>`
+        `<div style="font-size:0.65rem;color:var(--purple)">Zinsen aus KW ${c.sourceKW}: +${(c.amount || 0).toFixed(2).replace('.',',')}€</div>`
       ).join('');
     }
   }
   const totalWithInterest = totalNow + carriedSum;
 
-  const timeDisplay = formatDuration(totalSecs);
-  const timeCostStr = timeCost.toFixed(2).replace('.', ',') + '€';
+  const timeDisplay = formatDuration(calc.totalSeconds);
+  const timeCostStr = calc.timeCost.toFixed(2).replace('.', ',') + '€';
 
-  const bill = currentFT ? (currentFT.baseAmount || currentFT.totalAmount || 0) : 0;
 
   const counterHtml = `
     <section class="sub-fagtax-section" id="sub-fagtax-ui">
       <h3>💰 F A G - T A X</h3>
       <div style="text-align:center;padding:0 0 8px 0">
-        <p style="font-family:var(--font);font-size:0.6rem;color:var(--text-dim);font-weight:600;letter-spacing:2px">
+        <p style="font-family:var(--font);font-size:0.75rem;color:var(--text-secondary);font-weight:600;letter-spacing:2px">
           🔓 EINBLICK FREIGESCHALTET
         </p>
       </div>
       <div class="fagtax-counter-grid">
         <div class="ft-counter-item" style="border:2px solid var(--red-dark)">
           <div class="ft-counter-label">LOGINS DIESE WOCHE</div>
-          <div class="ft-counter-value" style="font-size:1.5rem">${logins}</div>
-          <div class="ft-counter-cost">= ${loginCost.toFixed(2).replace('.', ',')}€</div>
+          <div class="ft-counter-value" style="font-size:1.5rem">${calc.logins}</div>
+          <div class="ft-counter-cost">= ${calc.loginCost.toFixed(2).replace('.', ',')}€</div>
         </div>
         <div class="ft-counter-item" style="border:2px solid var(--red-dark)">
           <div class="ft-counter-label">ZEIT ONLINE</div>
           <div class="ft-counter-value" id="ft-live-time" style="font-size:1rem;color:var(--red)">${timeDisplay}</div>
-          <div class="ft-counter-cost" id="ft-live-cost">= ${timeCostStr} (${perSec.toFixed(4).replace('.',',')}€/Sek)</div>
+          <div class="ft-counter-cost" id="ft-live-cost">= ${timeCostStr} (${calc.perSec.toFixed(4).replace('.',',')}€/Sek)</div>
         </div>
         <div class="ft-counter-item" style="border:1px solid var(--border)">
           <div class="ft-counter-label">JAHRES-TRIBUT (3%)</div>
-          <div class="ft-counter-value" style="font-size:0.9rem">${yearTotal.toFixed(0)}€</div>
-          <div class="ft-counter-cost">STEUER: ${taxAmount.toFixed(2).replace('.', ',')}€</div>
+          <div class="ft-counter-value" style="font-size:1rem">${calc.yearTotal.toFixed(0)}€</div>
+          <div class="ft-counter-cost">STEUER: ${calc.taxAmount.toFixed(2).replace('.', ',')}€</div>
         </div>
         <div class="ft-counter-item" style="border:2px solid var(--orange)">
           <div class="ft-counter-label">KONTOPRÜFUNGEN</div>
-          <div class="ft-counter-value" style="font-size:1rem;color:var(--orange)">${checkCost.toFixed(2).replace('.', ',')}€</div>
+          <div class="ft-counter-value" style="font-size:1rem;color:var(--orange)">${calc.checkCost.toFixed(2).replace('.', ',')}€</div>
           <div class="ft-counter-cost">BISHER GEZAHLT</div>
         </div>
         <div class="ft-counter-item" style="border-color:var(--red-dark);grid-column:1 / -1;max-width:300px;margin:0 auto">
@@ -1902,11 +2045,6 @@ function renderSubFagTaxCounters() {
           ${carriedLines}
         </div>
       </div>
-      ${bill > 0 ? `<div class="ft-current-bill">
-        <div class="ft-bill-label">AKTUELLE FAG-TAX (OFFEN)</div>
-        <div class="ft-bill-amount">${(bill + carriedSum).toFixed(2).replace('.', ',')}€</div>
-        <div class="ft-bill-detail">${carriedSum > 0 ? `davon ${carriedSum.toFixed(2).replace('.', ',')}€ Verzugszinsen aus VORWOCHEN` : 'zu zahlen bis nächsten Freitag'}</div>
-      </div>` : ''}
     </section>
   `;
 
@@ -1918,25 +2056,30 @@ function renderSubFagTaxCounters() {
     if (ref) ref.insertAdjacentHTML('beforebegin', counterHtml);
   }
 
-  // Start live 1-second counter if not already running
-  if (!liveInterval) {
-    liveInterval = setInterval(() => {
-      const timeEl = $('ft-live-time');
-      const costEl = $('ft-live-cost');
-      const totalEl = $('ft-live-total');
-      if (!timeEl) { clearInterval(liveInterval); liveInterval = null; return; }
+  // Always restart the live 1-second counter (DOM elements get replaced on re-render)
+  if (liveInterval) { clearInterval(liveInterval); liveInterval = null; }
+  const closedSecs = calc.closedSeconds;
+  const perSec = calc.perSec;
+  const baseLoginCost = calc.loginCost;
+  const baseTaxAmount = calc.taxAmount;
+  const baseCheckCost = calc.checkCost;
+  liveInterval = setInterval(() => {
+    const timeEl = $('ft-live-time');
+    const costEl = $('ft-live-cost');
+    const totalEl = $('ft-live-total');
+    if (!timeEl) { clearInterval(liveInterval); liveInterval = null; return; }
 
-      const liveSecs = cfg.minutesEnabled ? getLiveSessionSeconds() : 0;
-      const total = closedSecs + liveSecs;
-      const timeVal = formatDuration(total);
-      const costVal = (total * perSec).toFixed(2).replace('.', ',') + '€';
-      const fullTotal = (loginCost + (total * perSec) + taxAmount + checkCost + carriedSum).toFixed(2).replace('.', ',') + '€';
+    const liveSecs = cfg.minutesEnabled ? getLiveSessionSeconds() : 0;
+    const total = closedSecs + liveSecs;
+    const timeVal = formatDuration(total);
+    const timeCostVal = round2(total * perSec);
+    const costVal = timeCostVal.toFixed(2).replace('.', ',') + '€';
+    const fullTotal = round2(baseLoginCost + (total * perSec) + baseTaxAmount + baseCheckCost + carriedSum).toFixed(2).replace('.', ',') + '€';
 
-      if (timeEl) timeEl.textContent = timeVal;
-      if (costEl) costEl.textContent = '= ' + costVal;
-      if (totalEl) totalEl.textContent = fullTotal;
-    }, 1000);
-  }
+    if (timeEl) timeEl.textContent = timeVal;
+    if (costEl) costEl.textContent = '= ' + costVal + ` (${perSec.toFixed(4).replace('.',',')}€/Sek)`;
+    if (totalEl) totalEl.textContent = fullTotal;
+  }, 1000);
 }
 
 function renderSubFagTaxHistory() {
@@ -1945,43 +2088,44 @@ function renderSubFagTaxHistory() {
   const existing = $('sub-fagtax-history');
   if (existing) existing.remove();
 
-  const totalPaid = paid.reduce((s, f) => s + (f.totalAmount || 0), 0);
-  const totalStr = totalPaid.toFixed(2).replace('.', ',') + '€';
-
-  // Find current unpaid Fag-Tax for this sub
-  const currentFT = fagTaxes.find(f => !f.paid && f.subId === currentUser.uid);
-  let carriedSum = 0;
-  let carriedSub = '';
-  if (currentFT) {
-    const carriedArr = currentFT.carriedInterest || [];
-    carriedSum = carriedArr.reduce((s, c) => s + (c.amount || 0), 0);
-    if (carriedArr.length > 0) {
-      carriedSub = carriedArr.map(c =>
-        `Zinsen KW ${c.sourceKW}: ${(c.amount || 0).toFixed(2).replace('.',',')}€`
-      ).join(' • ');
-    }
-  }
+  // Only show unpaid Fag-Taxes from PREVIOUS weeks (where late interest applies)
+  // Current week's FagTax is hidden — only visible after KONTO PRÜFEN
+  const weekStart = getLastFriday();
+  const overdueUnpaid = fagTaxes.filter(f =>
+    !f.paid &&
+    f.subId === currentUser.uid &&
+    f.weekStart &&
+    f.weekStart.seconds &&
+    f.weekStart.seconds * 1000 < weekStart.getTime()
+  );
 
   let html = `<div class="sub-fagtax-section" id="sub-fagtax-history" style="margin-top:20px">
     <h3>📜 FAG-TAX VERLAUF</h3>`;
 
-  // Show open Fag-Tax at top
-  if (currentFT) {
-    const baseAmt = currentFT.baseAmount || currentFT.totalAmount || 0;
-    const total = baseAmt + carriedSum;
-    const ftTotal = (total).toFixed(2).replace('.', ',') + '€';
-    const kw2 = currentFT.weekStart ? getKW(currentFT.weekStart.seconds ? new Date(currentFT.weekStart.seconds * 1000) : currentFT.weekStart) : '';
-    html += `<div class="ft-history-item" style="border-color:var(--red);background:var(--bg-hover-red)">
-      <span style="flex:1;font-weight:900;color:var(--red)">📄 OFFEN KW ${kw2}</span>
-      <span style="flex:2;font-size:0.6rem;color:var(--text-dim)">${carriedSub || '—'}</span>
-      <span class="ft-history-paid" style="font-weight:900;color:var(--red);font-size:0.85rem">${ftTotal}</span>
-    </div>`;
+  // Show overdue unpaid FagTaxes from previous weeks
+  if (overdueUnpaid.length > 0) {
+    overdueUnpaid.forEach(ft => {
+      const baseAmt = ft.baseAmount || ft.totalAmount || 0;
+      const carriedArr = ft.carriedInterest || [];
+      const carriedSum = carriedArr.reduce((s, c) => s + (c.amount || 0), 0);
+      const total = baseAmt + carriedSum;
+      const ftTotal = total.toFixed(2).replace('.', ',') + '€';
+      const kw2 = ft.weekStart ? getKW(new Date(ft.weekStart.seconds * 1000)) : '';
+      const daysLate = calculateLateInterestDays(new Date(ft.weekStart.seconds * 1000));
+      const carriedSub = carriedArr.length > 0
+        ? carriedArr.map(c => `Zinsen KW ${c.sourceKW}: ${(c.amount || 0).toFixed(2).replace('.',',')}€`).join(' • ')
+        : '';
+      html += `<div class="ft-history-item" style="border-color:var(--red);background:var(--bg-hover-red)">
+        <span style="flex:1;font-weight:900;color:var(--red)">⚠️ ÜBERFÄLLIG KW ${kw2}</span>
+        <span style="flex:2;font-size:0.75rem;color:var(--text-secondary)">${daysLate} Tag(e) überfällig${carriedSub ? ' • ' + carriedSub : ''}</span>
+        <span class="ft-history-paid" style="font-weight:900;color:var(--red);font-size:0.85rem">${ftTotal}</span>
+      </div>`;
+    });
   }
 
   if (paid.length === 0) {
-    html += `<p style="color:var(--text-dim);font-weight:700;text-align:center;padding:10px;font-size:0.7rem">Noch keine Fag-Taxes bezahlt.</p>`;
+    html += `<p style="color:var(--text-secondary);font-weight:700;text-align:center;padding:10px;font-size:0.8rem">Noch keine Fag-Taxes bezahlt.</p>`;
   } else {
-    html += `<p style="font-size:0.7rem;color:var(--text-dim);font-weight:700;margin-bottom:12px">Gesamt bezahlt: <strong style="color:var(--red)">${totalStr}</strong></p>`;
     paid.slice(0, 20).forEach(f => {
       const total = (f.totalWithInterest || f.totalAmount || 0).toFixed(2).replace('.', ',') + '€';
       let dateStr = '';
@@ -2001,7 +2145,7 @@ function renderSubFagTaxHistory() {
       const kwLabel = kw ? `KW ${kw}` : '';
       html += `<div class="ft-history-item">
         <span style="flex:1">${dateStr} ${kwLabel}</span>
-        <span style="flex:2;font-size:0.6rem;color:var(--text-dim)">${breakdown.join(' • ')}</span>
+        <span style="flex:2;font-size:0.7rem;color:var(--text-secondary)">${breakdown.join(' • ')}</span>
         <span class="ft-history-paid" style="font-weight:900">${total} ✅</span>
       </div>`;
     });
@@ -2050,13 +2194,26 @@ function showAlert(title, message) {
 
 function showConfirm(title, message) {
   return new Promise(resolve => {
-    showModal(title, `<p>${escapeHtml(message)}</p>`, 'BESTÄTIGEN', () => resolve(true), 'ABBRECHEN');
+    let resolved = false;
+    const safeResolve = (val) => { if (!resolved) { resolved = true; resolve(val); } };
+
+    showModal(title, `<p>${escapeHtml(message)}</p>`, 'BESTÄTIGEN', () => safeResolve(true), 'ABBRECHEN');
     const cancelBtn = document.getElementById('modal-cancel');
     if (cancelBtn) {
-      cancelBtn.onclick = () => { hideModal(); resolve(false); };
+      cancelBtn.onclick = () => { hideModal(); safeResolve(false); };
     }
-    modalCloseBtn.onclick = () => { hideModal(); resolve(false); };
-    modalOverlay.onclick = (e) => { if (e.target === modalOverlay) { hideModal(); resolve(false); } };
+    modalCloseBtn.onclick = () => { hideModal(); safeResolve(false); };
+    modalOverlay.onclick = (e) => { if (e.target === modalOverlay) { hideModal(); safeResolve(false); } };
+
+    // #7: Handle Escape key to prevent promise leak
+    const escHandler = (e) => {
+      if (e.key === 'Escape') {
+        document.removeEventListener('keydown', escHandler);
+        hideModal();
+        safeResolve(false);
+      }
+    };
+    document.addEventListener('keydown', escHandler);
   });
 }
 

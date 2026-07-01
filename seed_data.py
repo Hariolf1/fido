@@ -122,7 +122,7 @@ for uname, pw, display, created in subs_data:
     all_fag_taxes[uname] = []
 
     while week <= current_friday:
-        kw_num = int((week - datetime.datetime(2026, 1, 1)).days / 7) + 1
+        kw_num = week.isocalendar()[1]
 
         # Randomish but plausible usage data
         if uname == "alpha":
