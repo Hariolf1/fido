@@ -932,23 +932,23 @@ async function subCheckAccount() {
 async function autoCreateFagTaxes() {
   if (!db || currentUser.role !== 'dom') return;
   const weekStart = getLastFriday();
-  // Check per-sub instead of globally — new subs get their FagTax even if others already have theirs
   const activeSubs = subs.filter(s => s.active !== false && s.fagTax && s.fagTax.enabled !== false);
   if (activeSubs.length === 0) return;
 
   for (const sub of activeSubs) {
-    // Skip this sub if they already have a FagTax for this week
-    const subHasFT = fagTaxes.some(f =>
+    // Always fetch fresh session data
+    const subSessions = await fetchSubSessions(sub.id);
+    const calc = calculateWeeklyFagTax(sub, weekStart, subSessions, payments, accountChecks);
+
+    // Find existing FagTax for this week for this sub
+    const existingFT = fagTaxes.find(f =>
       f.subId === sub.id &&
       f.weekStart && f.weekStart.seconds &&
       Math.abs(f.weekStart.seconds * 1000 - weekStart.getTime()) < 86400000
     );
-    if (subHasFT) continue;
 
-    const subSessions = await fetchSubSessions(sub.id);
-    // #3/#9: Use central calculation function (now includes checkCost)
-    const calc = calculateWeeklyFagTax(sub, weekStart, subSessions, payments, accountChecks);
-    if (calc.baseAmount <= 0) continue;
+    // If paid, it's final — don't touch
+    if (existingFT && existingFT.paid) continue;
 
     // Carried interest from previous PAID FagTax (interest generated when marking paid)
     const prevFTs = fagTaxes
@@ -962,23 +962,45 @@ async function autoCreateFagTaxes() {
     }
     const carriedSum = carriedInterest.reduce((s, c) => s + c.amount, 0);
     const totalAmount = round2(calc.baseAmount + carriedSum);
-    if (totalAmount <= 0) continue;
 
-    try {
-      await db.collection('fagTaxes').add({
-        subId: sub.id, username: sub.username,
-        displayName: sub.displayName || sub.username,
-        weekStart: weekStart,
-        loginsCount: calc.logins, minutesCount: Math.ceil(calc.totalSeconds / 60),
-        secondsCount: calc.totalSeconds, loginCost: calc.loginCost, minuteCost: calc.timeCost,
-        yearTotal: calc.yearTotal, taxAmount: calc.taxAmount, checkCost: calc.checkCost,
-        baseAmount: calc.baseAmount,
-        carriedInterest: carriedInterest.length > 0 ? carriedInterest : [],
-        totalAmount,
-        lateInterest: false, paid: false, paidAt: null,
-        createdAt: firebase.firestore.FieldValue.serverTimestamp()
-      });
-    } catch (e) { console.error('Auto FagTax error:', e); }
+    if (existingFT) {
+      // UPDATE existing unpaid FagTax with fresh data
+      if (calc.baseAmount <= 0 && totalAmount <= 0) continue;
+      try {
+        await db.collection('fagTaxes').doc(existingFT.id).update({
+          loginsCount: calc.logins,
+          minutesCount: Math.ceil(calc.totalSeconds / 60),
+          secondsCount: calc.totalSeconds,
+          loginCost: calc.loginCost,
+          minuteCost: calc.timeCost,
+          yearTotal: calc.yearTotal,
+          taxAmount: calc.taxAmount,
+          checkCost: calc.checkCost,
+          baseAmount: calc.baseAmount,
+          carriedInterest: carriedInterest.length > 0 ? carriedInterest : [],
+          totalAmount
+        });
+      } catch (e) { console.error('FagTax update error:', e); }
+    } else {
+      // CREATE new FagTax
+      if (calc.baseAmount <= 0) continue;
+      if (totalAmount <= 0) continue;
+      try {
+        await db.collection('fagTaxes').add({
+          subId: sub.id, username: sub.username,
+          displayName: sub.displayName || sub.username,
+          weekStart: weekStart,
+          loginsCount: calc.logins, minutesCount: Math.ceil(calc.totalSeconds / 60),
+          secondsCount: calc.totalSeconds, loginCost: calc.loginCost, minuteCost: calc.timeCost,
+          yearTotal: calc.yearTotal, taxAmount: calc.taxAmount, checkCost: calc.checkCost,
+          baseAmount: calc.baseAmount,
+          carriedInterest: carriedInterest.length > 0 ? carriedInterest : [],
+          totalAmount,
+          lateInterest: false, paid: false, paidAt: null,
+          createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+      } catch (e) { console.error('Auto FagTax error:', e); }
+    }
   }
 }
 
