@@ -333,11 +333,12 @@ async function loginSub(username, password) {
   } catch (e) { return false; }
 }
 
-function logout() {
+async function logout() {
   if (heartbeatInterval) { clearInterval(heartbeatInterval); heartbeatInterval = null; }
   if (liveInterval) { clearInterval(liveInterval); liveInterval = null; }
-  if (currentSessionId) { closeSessionSync(currentSessionId); currentSessionId = null; currentSessionStart = 0; }
+  if (currentSessionId) { await closeSessionAsync(currentSessionId); }
   window.removeEventListener('beforeunload', handleBeforeUnload);
+  window.removeEventListener('pagehide', handlePageHide);
   document.removeEventListener('visibilitychange', handleVisibilityChange);
   if (unsubscribePayments) { unsubscribePayments(); unsubscribePayments = null; }
   if (unsubscribeSubs) { unsubscribeSubs(); unsubscribeSubs = null; }
@@ -381,6 +382,7 @@ async function startSession() {
     if (heartbeatInterval) clearInterval(heartbeatInterval);
     heartbeatInterval = setInterval(() => heartbeat(), 30000);
     window.addEventListener('beforeunload', handleBeforeUnload);
+    window.addEventListener('pagehide', handlePageHide);
     document.addEventListener('visibilitychange', handleVisibilityChange);
   } catch (e) { console.error('Session start error:', e); }
 }
@@ -395,65 +397,93 @@ async function heartbeat() {
 }
 
 function handleBeforeUnload() {
-  if (currentSessionId) {
-    closeSessionSync(currentSessionId);
-  }
+  closeSessionOnUnload();
 }
 
-// #2: Use visibilitychange for more reliable session closing
+function handlePageHide() {
+  closeSessionOnUnload();
+}
+
+// Only track visibility for heartbeat optimization, NOT session closing.
+// Tab switch ≠ session end. Session ends only on tab close/navigate away.
 function handleVisibilityChange() {
-  if (document.visibilityState === 'hidden' && currentSessionId && db) {
-    // Try to close session when tab becomes hidden
-    closeSessionSync(currentSessionId);
-  }
+  // No-op: heartbeat system handles stale detection.
+  // closeSessionOnUnload only fires from beforeunload/pagehide.
 }
 
-async function closeSessionSync(sessionId) {
-  if (!db || !sessionId) return;
+// Fire-and-forget session close for page unload (tab close / navigate away).
+// Uses REST API with fetch keepalive to guarantee delivery even if page is destroyed.
+function closeSessionOnUnload() {
+  if (!currentSessionId) return;
+  const sessionId = currentSessionId;
+  const nowMs = Date.now();
+  const loginMs = currentSessionStart || nowMs;
+  const secs = Math.max(1, Math.round((nowMs - loginMs) / 1000));
+  const mins = Math.max(1, Math.round(secs / 60));
+
+  // Primary: Firestore REST API with keepalive (survives page unload)
   try {
-    const snap = await db.collection('sessions').doc(sessionId).get();
-    if (!snap.exists) return;
-    const data = snap.data();
-    if (!data.active) return;
-    const loginMs = data.loginTime ? data.loginTime.seconds * 1000 : Date.now();
-    const nowMs = Date.now();
-    const mins = Math.round((nowMs - loginMs) / 60000);
-    const secs = Math.round((nowMs - loginMs) / 1000);
-    await db.collection('sessions').doc(sessionId).update({
+    const url = `https://firestore.googleapis.com/v1/projects/${CONFIG.firebase.projectId}/databases/(default)/documents/sessions/${sessionId}?updateMask.fieldPaths=active&updateMask.fieldPaths=logoutTime&updateMask.fieldPaths=durationMinutes&updateMask.fieldPaths=durationSeconds&key=${CONFIG.firebase.apiKey}`;
+    const body = JSON.stringify({
+      fields: {
+        active: { booleanValue: false },
+        logoutTime: { timestampValue: new Date().toISOString() },
+        durationMinutes: { integerValue: String(mins) },
+        durationSeconds: { integerValue: String(secs) }
+      }
+    });
+    fetch(url, {
+      method: 'PATCH',
+      body: body,
+      headers: { 'Content-Type': 'application/json' },
+      keepalive: true
+    });
+  } catch (e) {
+    console.warn('REST session close failed:', e);
+  }
+
+  // Fallback: Firestore SDK fire-and-forget (may not complete during unload)
+  try {
+    db.collection('sessions').doc(sessionId).update({
       logoutTime: new Date(),
-      durationMinutes: Math.max(1, mins),
-      durationSeconds: Math.max(60, secs),
+      durationMinutes: mins,
+      durationSeconds: secs,
       active: false
     });
-  } catch (_) {}
+  } catch (e) {}
+
   if (heartbeatInterval) { clearInterval(heartbeatInterval); heartbeatInterval = null; }
   if (liveInterval) { clearInterval(liveInterval); liveInterval = null; }
-  currentSessionId = null; currentSessionStart = 0;
-  window.removeEventListener('beforeunload', handleBeforeUnload);
+  currentSessionId = null;
+  currentSessionStart = 0;
 }
 
-async function closeSession(sessionId) {
+// Async session close for programmatic use (explicit logout button).
+// Reads actual loginTime from Firestore for precise duration calculation.
+async function closeSessionAsync(sessionId) {
   if (!db || !sessionId) return;
   try {
     const snap = await db.collection('sessions').doc(sessionId).get();
     if (!snap.exists) return;
     const data = snap.data();
     if (!data.active) return;
-    const loginMs = data.loginTime ? data.loginTime.seconds * 1000 : Date.now();
+    const loginMs = data.loginTime ? data.loginTime.seconds * 1000 : (currentSessionStart || Date.now());
     const nowMs = Date.now();
-    const mins = Math.round((nowMs - loginMs) / 60000);
-    const secs = Math.round((nowMs - loginMs) / 1000);
+    const secs = Math.max(1, Math.round((nowMs - loginMs) / 1000));
+    const mins = Math.max(1, Math.round(secs / 60));
     await db.collection('sessions').doc(sessionId).update({
       logoutTime: firebase.firestore.FieldValue.serverTimestamp(),
-      durationMinutes: Math.max(1, mins),
-      durationSeconds: Math.max(60, secs),
+      durationMinutes: mins,
+      durationSeconds: secs,
       active: false
     });
   } catch (e) { console.error('Session close error:', e); }
   if (heartbeatInterval) { clearInterval(heartbeatInterval); heartbeatInterval = null; }
   if (liveInterval) { clearInterval(liveInterval); liveInterval = null; }
-  currentSessionId = null; currentSessionStart = 0;
+  currentSessionId = null;
+  currentSessionStart = 0;
   window.removeEventListener('beforeunload', handleBeforeUnload);
+  window.removeEventListener('pagehide', handlePageHide);
 }
 
 async function closeStaleSessions() {
@@ -473,7 +503,7 @@ async function closeStaleSessions() {
         db.collection('sessions').doc(doc.id).update({
           logoutTime: new Date(cutoff),
           durationMinutes: Math.max(1, mins),
-          durationSeconds: Math.max(60, secs),
+          durationSeconds: Math.max(1, secs),
           active: false
         });
       }
@@ -481,36 +511,48 @@ async function closeStaleSessions() {
   } catch (_) {}
 }
 
-// #5: Renamed from startAllSessionsListener — this is a one-time fetch, not a listener
-function fetchAllSessions() {
+// Real-time listener for ALL sessions (DOM view).
+// Automatically updates when any sub logs in/out — no manual refresh needed.
+function startAllSessionsListener() {
   if (unsubscribeSessions) unsubscribeSessions();
   if (!currentUser || currentUser.role !== 'dom') return;
-  const weekStart = getLastFriday();
-  const activeSubIds = subs.filter(s => s.active !== false).map(s => s.id);
-  if (activeSubIds.length === 0) { sessions = []; renderFagTaxOverview(); return; }
 
-  let loaded = 0;
-  sessions = [];
-  activeSubIds.forEach(subId => {
-    db.collection('sessions')
-      .where('subId', '==', subId)
-      .get()
-      .then(snap => {
-        snap.forEach(d => {
-          const data = { id: d.id, ...d.data() };
-          if (data.loginTime && data.loginTime.seconds && data.loginTime.seconds * 1000 >= weekStart.getTime()) {
-            sessions.push(data);
-          }
-        });
-        loaded++;
-        if (loaded === activeSubIds.length) renderFagTaxOverview();
-      })
-      .catch(err => {
-        console.warn('AllSessions fetch error:', err.message);
-        loaded++;
-        if (loaded === activeSubIds.length) renderFagTaxOverview();
+  unsubscribeSessions = db.collection('sessions')
+    .onSnapshot(snap => {
+      const weekStart = getLastFriday();
+      sessions = [];
+      snap.forEach(d => {
+        const data = { id: d.id, ...d.data() };
+        if (data.loginTime && data.loginTime.seconds &&
+            data.loginTime.seconds * 1000 >= weekStart.getTime()) {
+          sessions.push(data);
+        }
       });
-  });
+      renderFagTaxOverview();
+    }, err => console.warn('Sessions listener error:', err.message));
+}
+
+// Real-time listener for sub's own sessions.
+// Keeps sessions[] and lastCheckSessions in sync for accurate counters.
+function startSubSessionsListener() {
+  if (unsubscribeSessions) unsubscribeSessions();
+  if (!currentUser || currentUser.role !== 'sub') return;
+
+  unsubscribeSessions = db.collection('sessions')
+    .where('subId', '==', currentUser.uid)
+    .onSnapshot(snap => {
+      const weekStart = getLastFriday();
+      sessions = [];
+      snap.forEach(d => {
+        const data = { id: d.id, ...d.data() };
+        if (data.loginTime && data.loginTime.seconds &&
+            data.loginTime.seconds * 1000 >= weekStart.getTime()) {
+          sessions.push(data);
+        }
+      });
+      // Keep lastCheckSessions in sync so counters stay accurate
+      lastCheckSessions = sessions;
+    }, err => console.warn('Sub sessions listener error:', err.message));
 }
 
 async function fetchSubSessions(subId) {
@@ -552,14 +594,16 @@ function showDashboardView() {
   if (currentUser.role === 'dom') {
     startSubsListener();
     startFagTaxesListener();
-    fetchAllSessions(); // #5: Renamed from startAllSessionsListener
+    startAllSessionsListener(); // Real-time listener for all sessions
     startAccountChecksListener();
-    setTimeout(() => autoCreateFagTaxes(), 3000);
+    // Delay autoCreateFagTaxes to let session listener populate data first
+    setTimeout(() => autoCreateFagTaxes(), 5000);
   }
   if (currentUser.role === 'sub') {
     startSubsListener(); // Needed so subCheckAccount can find the sub in the subs array
     startFagTaxesListener();
     startAccountChecksListener();
+    startSubSessionsListener(); // Real-time listener for own sessions
     renderSubFagTaxView();
     // #20: Delay showLoginMessage until subs data is available
     const waitForSubs = setInterval(() => {
@@ -888,15 +932,19 @@ async function subCheckAccount() {
 async function autoCreateFagTaxes() {
   if (!db || currentUser.role !== 'dom') return;
   const weekStart = getLastFriday();
-  const existing = fagTaxes.some(f =>
-    f.weekStart && f.weekStart.seconds &&
-    Math.abs(f.weekStart.seconds * 1000 - weekStart.getTime()) < 86400000
-  );
-  if (existing) return;
+  // Check per-sub instead of globally — new subs get their FagTax even if others already have theirs
   const activeSubs = subs.filter(s => s.active !== false && s.fagTax && s.fagTax.enabled !== false);
   if (activeSubs.length === 0) return;
 
   for (const sub of activeSubs) {
+    // Skip this sub if they already have a FagTax for this week
+    const subHasFT = fagTaxes.some(f =>
+      f.subId === sub.id &&
+      f.weekStart && f.weekStart.seconds &&
+      Math.abs(f.weekStart.seconds * 1000 - weekStart.getTime()) < 86400000
+    );
+    if (subHasFT) continue;
+
     const subSessions = await fetchSubSessions(sub.id);
     // #3/#9: Use central calculation function (now includes checkCost)
     const calc = calculateWeeklyFagTax(sub, weekStart, subSessions, payments, accountChecks);
