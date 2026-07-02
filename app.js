@@ -1761,28 +1761,16 @@ function showSubFagTaxDetails(subId, ftWeekStart, ftId) {
 
 function renderFagTaxOverview() {
   if (!fagTaxOverview) return;
-  if (fagTaxes.length === 0) {
-    fagTaxOverview.innerHTML = '<p style="text-align:center;padding:20px;color:var(--text-dim);font-weight:700">Noch keine Fag-Taxes vorhanden.</p>';
-    return;
-  }
+  const weekStart = getLastFriday();
+  const weekStartMs = weekStart.getTime();
 
-  // Group FagTaxes by weekStart desc
-  const weekMap = {};
-  fagTaxes.forEach(ft => {
-    const ws = ft.weekStart && ft.weekStart.seconds
-      ? new Date(ft.weekStart.seconds * 1000)
-      : new Date(ft.weekStart);
-    const key = ws.getTime();
-    if (!weekMap[key]) weekMap[key] = [];
-    weekMap[key].push(ft);
-  });
-  const weeks = Object.keys(weekMap).map(Number).sort((a, b) => b - a);
-
+  // === CURRENT WEEK: Always LIVE calculated ===
+  const activeSubs = subs.filter(s => s.active !== false && s.fagTax && s.fagTax.enabled !== false);
   let html = '<div class="fagtax-weekly-overview">';
   html += '<h4>📊 FAG-TAX ÜBERSICHT (ALLE WOCHEN)</h4>';
 
   // Wochenabschluss button
-  html += `<div style="margin:10px 0;text-align:center"><button id="btn-week-close" class="btn btn--primary" style="font-size:0.8rem">📅 AKTUELLE WOCHE BERECHNEN</button></div>`;
+  html += `<div style="margin:10px 0;text-align:center"><button id="btn-week-close" class="btn btn--primary" style="font-size:0.8rem">📅 AKTUELLE WOCHE SPEICHERN</button></div>`;
 
   // Export unpaid button
   const unpaid = fagTaxes.filter(f => !f.paid);
@@ -1790,55 +1778,44 @@ function renderFagTaxOverview() {
     html += `<div style="margin:10px 0 16px;text-align:center"><button id="btn-export-unpaid" class="btn btn--danger">📄 ALLE OFFENEN EXPORTIEREN</button></div>`;
   }
 
-  weeks.forEach(wsKey => {
-    const weekFTs = weekMap[wsKey];
-    const wsDate = new Date(wsKey);
-    const kw = getKW(wsDate);
-    const wsStr = wsDate.toLocaleDateString('de-DE');
-    wsDate.setDate(wsDate.getDate() + 6);
-    const weStr = wsDate.toLocaleDateString('de-DE');
+  // --- LIVE Current Week ---
+  if (activeSubs.length > 0) {
+    const kw = getKW(weekStart);
+    const wsStr = weekStart.toLocaleDateString('de-DE');
+    const weDate = new Date(weekStart); weDate.setDate(weDate.getDate() + 6);
+    const weStr = weDate.toLocaleDateString('de-DE');
 
-    html += `<div class="ft-week-group" style="margin-bottom:20px;padding:12px;background:var(--bg-hover);border-radius:8px;border:1px solid var(--border)">`;
-    html += `<h5 style="margin:0 0 10px 0;font-size:0.9rem;letter-spacing:2px">📅 KW ${kw} <span style="font-weight:400;color:var(--text-secondary)">(${wsStr} – ${weStr})</span></h5>`;
+    html += `<div class="ft-week-group" style="margin-bottom:20px;padding:12px;background:var(--bg-hover);border-radius:8px;border:2px solid var(--red)">`;
+    html += `<h5 style="margin:0 0 10px 0;font-size:0.9rem;letter-spacing:2px">🔴 KW ${kw} <span style="font-weight:400;color:var(--text-secondary)">(${wsStr} – ${weStr})</span> <span style="color:var(--red);font-size:0.7rem;font-weight:900">LIVE</span></h5>`;
 
-    // Table for this week
     html += `<table class="fagtax-table" style="font-size:0.75rem"><thead><tr>
-      <th>SAU</th><th>€ BASIS</th><th>€ ZINSEN</th><th>GESAMT</th><th>STATUS</th><th>AKTIONEN</th>
+      <th>SAU</th><th>LOGINS</th><th>ZEIT</th><th>€ BASIS</th><th>€ ZINSEN</th><th>GESAMT</th><th>STATUS</th><th>AKTIONEN</th>
     </tr></thead><tbody>`;
 
-    // Sort by sub name
-    weekFTs.sort((a, b) => (a.displayName || a.username || '').localeCompare(b.displayName || b.username || ''));
+    activeSubs.sort((a, b) => ((a.displayName || a.username || '')).localeCompare(b.displayName || b.username || ''));
 
-    weekFTs.forEach(ft => {
-      const sub = subs.find(s => s.id === ft.subId);
-      const name = sub ? (sub.displayName || sub.username) : (ft.displayName || ft.username || '?');
-      const isPaid = ft.paid;
+    activeSubs.forEach(sub => {
+      const name = sub.displayName || sub.username;
+      const calc = calculateWeeklyFagTax(sub, weekStart, sessions, payments, accountChecks);
 
-      // #9: For unpaid FagTaxes, use stored baseAmount but ensure checkCost is included
-      let baseAmount;
-      if (isPaid) {
-        baseAmount = ft.baseAmount || ft.totalAmount || 0;
-      } else {
-        baseAmount = ft.baseAmount || ft.totalAmount || 0;
-        // Add checkCost if it wasn't stored in this FagTax (backward compat)
-        if (ft.checkCost === undefined && sub) {
-          const ftWS = ft.weekStart?.seconds ? new Date(ft.weekStart.seconds * 1000) : null;
-          const checkCost = sumWeeklyChecks(sub.id, ftWS);
-          baseAmount = round2(baseAmount + checkCost);
-        }
-      }
+      // Check if there's an existing FagTax record for this week for this sub
+      const existingFT = fagTaxes.find(f =>
+        f.subId === sub.id &&
+        f.weekStart && f.weekStart.seconds &&
+        Math.abs(f.weekStart.seconds * 1000 - weekStartMs) < 86400000
+      );
+      const isPaid = existingFT && existingFT.paid;
+      const ftId = existingFT ? existingFT.id : null;
 
-      const carried = ft.carriedInterest || [];
+      // Carried interest
+      const carried = existingFT ? (existingFT.carriedInterest || []) : [];
       const carriedSum = carried.reduce((s, c) => s + (c.amount || 0), 0);
-      const paidIntAmt = ft.interestAmount || 0;
-      const totalPaid = ft.totalWithInterest || (baseAmount + carriedSum);
+      const totalAmount = round2(calc.baseAmount + carriedSum);
 
-      let statusStr = '';
-      let actionsStr = '';
-
-      // Interest column: carried items for unpaid, stored interest for paid
+      // Interest column
       let intColHTML = '<span style="color:var(--text-dim)">0,00€</span>';
       if (isPaid) {
+        const paidIntAmt = existingFT.interestAmount || 0;
         if (paidIntAmt > 0) {
           intColHTML = `<span style="color:var(--purple);font-weight:900">${paidIntAmt.toFixed(2).replace('.',',')}€</span>`;
         } else {
@@ -1851,28 +1828,40 @@ function renderFagTaxOverview() {
         intColHTML = `<div style="color:var(--purple);font-weight:700">${lines}</div>`;
       }
 
+      // Status & Actions
+      let statusStr, actionsStr;
       if (isPaid) {
         let paidDateStr = '?';
-        if (ft.paidAt) {
-          if (ft.paidAt.seconds) paidDateStr = new Date(ft.paidAt.seconds * 1000).toLocaleDateString('de-DE');
-          else if (ft.paidAt instanceof Date) paidDateStr = ft.paidAt.toLocaleDateString('de-DE');
-          else if (typeof ft.paidAt === 'string') paidDateStr = new Date(ft.paidAt).toLocaleDateString('de-DE');
+        if (existingFT.paidAt) {
+          if (existingFT.paidAt.seconds) paidDateStr = new Date(existingFT.paidAt.seconds * 1000).toLocaleDateString('de-DE');
+          else if (existingFT.paidAt instanceof Date) paidDateStr = existingFT.paidAt.toLocaleDateString('de-DE');
+          else if (typeof existingFT.paidAt === 'string') paidDateStr = new Date(existingFT.paidAt).toLocaleDateString('de-DE');
         }
         statusStr = `<span style="color:var(--green);font-weight:900">✅ ${paidDateStr}</span>`;
-        actionsStr = `<button class="btn btn--sm btn--cyan" data-ftid="${ft.id}">📄 PDF</button>`;
+        actionsStr = ftId ? `<button class="btn btn--sm btn--cyan" data-ftid="${ftId}">📄 PDF</button>` : '';
       } else {
         statusStr = `<span style="color:var(--red);font-weight:900">❌ OFFEN</span>`;
-        actionsStr = `
-          <button class="btn btn--sm btn--success" data-ftid="${ft.id}">BEZAHLT</button>
-          <button class="btn btn--sm btn--cyan" data-ftid="${ft.id}">📄 PDF</button>
-        `;
+        actionsStr = ftId
+          ? `<button class="btn btn--sm btn--success" data-ftid="${ftId}">BEZAHLT</button>
+             <button class="btn btn--sm btn--cyan" data-ftid="${ftId}">📄 PDF</button>`
+          : '<span style="color:var(--text-dim);font-size:0.65rem">–</span>';
       }
 
-      const baseStr = baseAmount.toFixed(2).replace('.', ',') + '€';
-      const totalStr = (isPaid ? totalPaid : (baseAmount + carriedSum)).toFixed(2).replace('.', ',') + '€';
+      // Format time
+      const totalSecs = calc.totalSeconds;
+      const timeStr = totalSecs >= 3600
+        ? `${Math.floor(totalSecs / 3600)}h ${Math.floor((totalSecs % 3600) / 60)}m`
+        : totalSecs >= 60
+          ? `${Math.floor(totalSecs / 60)}m ${totalSecs % 60}s`
+          : `${totalSecs}s`;
+
+      const baseStr = calc.baseAmount.toFixed(2).replace('.', ',') + '€';
+      const totalStr = (isPaid ? (existingFT.totalWithInterest || totalAmount) : totalAmount).toFixed(2).replace('.', ',') + '€';
 
       html += `<tr>
-        <td><span class="ft-sub-link" data-subid="${ft.subId}" data-ftid="${ft.id}" data-weekstart="${ft.weekStart?.seconds ? ft.weekStart.seconds * 1000 : ''}" style="cursor:pointer;border-bottom:1px dashed var(--text-dim)">🐷 ${escapeHtml(name)}</span></td>
+        <td><span class="ft-sub-link" data-subid="${sub.id}" data-ftid="${ftId || ''}" data-weekstart="${weekStartMs}" style="cursor:pointer;border-bottom:1px dashed var(--text-dim)">🐷 ${escapeHtml(name)}</span></td>
+        <td style="font-weight:700">${calc.logins}</td>
+        <td style="font-size:0.7rem">${timeStr}</td>
         <td>${baseStr}</td>
         <td style="font-size:0.7rem">${intColHTML}</td>
         <td style="color:var(--red);font-weight:900">${totalStr}</td>
@@ -1882,7 +1871,117 @@ function renderFagTaxOverview() {
     });
 
     html += '</tbody></table></div>';
+  }
+
+  // === PAST WEEKS: Stored FagTax records ===
+  const pastFTs = fagTaxes.filter(ft => {
+    if (!ft.weekStart || !ft.weekStart.seconds) return false;
+    return Math.abs(ft.weekStart.seconds * 1000 - weekStartMs) >= 86400000; // Not current week
   });
+
+  if (pastFTs.length > 0) {
+    const weekMap = {};
+    pastFTs.forEach(ft => {
+      const ws = ft.weekStart.seconds ? new Date(ft.weekStart.seconds * 1000) : new Date(ft.weekStart);
+      const key = ws.getTime();
+      if (!weekMap[key]) weekMap[key] = [];
+      weekMap[key].push(ft);
+    });
+    const weeks = Object.keys(weekMap).map(Number).sort((a, b) => b - a);
+
+    weeks.forEach(wsKey => {
+      const weekFTs = weekMap[wsKey];
+      const wsDate = new Date(wsKey);
+      const kw = getKW(wsDate);
+      const wsStr = wsDate.toLocaleDateString('de-DE');
+      wsDate.setDate(wsDate.getDate() + 6);
+      const weStr = wsDate.toLocaleDateString('de-DE');
+
+      html += `<div class="ft-week-group" style="margin-bottom:20px;padding:12px;background:var(--bg-hover);border-radius:8px;border:1px solid var(--border)">`;
+      html += `<h5 style="margin:0 0 10px 0;font-size:0.9rem;letter-spacing:2px">📅 KW ${kw} <span style="font-weight:400;color:var(--text-secondary)">(${wsStr} – ${weStr})</span></h5>`;
+
+      html += `<table class="fagtax-table" style="font-size:0.75rem"><thead><tr>
+        <th>SAU</th><th>€ BASIS</th><th>€ ZINSEN</th><th>GESAMT</th><th>STATUS</th><th>AKTIONEN</th>
+      </tr></thead><tbody>`;
+
+      weekFTs.sort((a, b) => (a.displayName || a.username || '').localeCompare(b.displayName || b.username || ''));
+
+      weekFTs.forEach(ft => {
+        const sub = subs.find(s => s.id === ft.subId);
+        const name = sub ? (sub.displayName || sub.username) : (ft.displayName || ft.username || '?');
+        const isPaid = ft.paid;
+
+        let baseAmount;
+        if (isPaid) {
+          baseAmount = ft.baseAmount || ft.totalAmount || 0;
+        } else {
+          baseAmount = ft.baseAmount || ft.totalAmount || 0;
+          if (ft.checkCost === undefined && sub) {
+            const ftWS = ft.weekStart?.seconds ? new Date(ft.weekStart.seconds * 1000) : null;
+            const checkCost = sumWeeklyChecks(sub.id, ftWS);
+            baseAmount = round2(baseAmount + checkCost);
+          }
+        }
+
+        const carried = ft.carriedInterest || [];
+        const carriedSum = carried.reduce((s, c) => s + (c.amount || 0), 0);
+        const paidIntAmt = ft.interestAmount || 0;
+        const totalPaid = ft.totalWithInterest || (baseAmount + carriedSum);
+
+        let statusStr = '';
+        let actionsStr = '';
+        let intColHTML = '<span style="color:var(--text-dim)">0,00€</span>';
+        if (isPaid) {
+          if (paidIntAmt > 0) {
+            intColHTML = `<span style="color:var(--purple);font-weight:900">${paidIntAmt.toFixed(2).replace('.',',')}€</span>`;
+          } else {
+            intColHTML = '<span style="color:var(--text-dim);font-size:0.65rem">—</span>';
+          }
+        } else if (carried.length > 0) {
+          const lines = carried.map(c =>
+            `<div style="font-size:0.65rem;line-height:1.4">Zinsen KW ${c.sourceKW}: <strong>${(c.amount || 0).toFixed(2).replace('.',',')}€</strong></div>`
+          ).join('');
+          intColHTML = `<div style="color:var(--purple);font-weight:700">${lines}</div>`;
+        }
+
+        if (isPaid) {
+          let paidDateStr = '?';
+          if (ft.paidAt) {
+            if (ft.paidAt.seconds) paidDateStr = new Date(ft.paidAt.seconds * 1000).toLocaleDateString('de-DE');
+            else if (ft.paidAt instanceof Date) paidDateStr = ft.paidAt.toLocaleDateString('de-DE');
+            else if (typeof ft.paidAt === 'string') paidDateStr = new Date(ft.paidAt).toLocaleDateString('de-DE');
+          }
+          statusStr = `<span style="color:var(--green);font-weight:900">✅ ${paidDateStr}</span>`;
+          actionsStr = `<button class="btn btn--sm btn--cyan" data-ftid="${ft.id}">📄 PDF</button>`;
+        } else {
+          statusStr = `<span style="color:var(--red);font-weight:900">❌ OFFEN</span>`;
+          actionsStr = `
+            <button class="btn btn--sm btn--success" data-ftid="${ft.id}">BEZAHLT</button>
+            <button class="btn btn--sm btn--cyan" data-ftid="${ft.id}">📄 PDF</button>
+          `;
+        }
+
+        const baseStr = baseAmount.toFixed(2).replace('.', ',') + '€';
+        const totalStr = (isPaid ? totalPaid : (baseAmount + carriedSum)).toFixed(2).replace('.', ',') + '€';
+
+        html += `<tr>
+          <td><span class="ft-sub-link" data-subid="${ft.subId}" data-ftid="${ft.id}" data-weekstart="${ft.weekStart?.seconds ? ft.weekStart.seconds * 1000 : ''}" style="cursor:pointer;border-bottom:1px dashed var(--text-dim)">🐷 ${escapeHtml(name)}</span></td>
+          <td>${baseStr}</td>
+          <td style="font-size:0.7rem">${intColHTML}</td>
+          <td style="color:var(--red);font-weight:900">${totalStr}</td>
+          <td>${statusStr}</td>
+          <td style="white-space:nowrap">${actionsStr}</td>
+        </tr>`;
+      });
+
+      html += '</tbody></table></div>';
+    });
+  }
+
+  // Show message if no data at all
+  if (activeSubs.length === 0 && pastFTs.length === 0) {
+    html += '<p style="text-align:center;padding:20px;color:var(--text-dim);font-weight:700">Noch keine Fag-Taxes vorhanden.</p>';
+  }
 
   html += '</div>';
   fagTaxOverview.innerHTML = html;
@@ -1917,11 +2016,11 @@ function renderFagTaxOverview() {
     // "WOCHE BERECHNEN" button
     if (target.id === 'btn-week-close') {
       target.disabled = true;
-      target.textContent = '⏳ BERECHNE...';
+      target.textContent = '⏳ SPEICHERE...';
       autoCreateFagTaxes().then(() => {
-        target.textContent = '📅 AKTUELLE WOCHE BERECHNEN';
+        target.textContent = '📅 AKTUELLE WOCHE SPEICHERN';
         target.disabled = false;
-        showToast('Fag-Tax für aktuelle Woche berechnet', 'success');
+        showToast('Fag-Tax für aktuelle Woche gespeichert', 'success');
       });
       return;
     }
