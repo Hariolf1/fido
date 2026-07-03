@@ -78,6 +78,7 @@
 html {
   scroll-behavior: smooth;
   -webkit-tap-highlight-color: transparent;
+  overflow-x: hidden;
 }
 
 body {
@@ -87,6 +88,7 @@ body {
   font-size: 15px;
   line-height: 1.65;
   min-height: 100vh;
+  overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -125,27 +127,28 @@ a:hover { color: var(--red-light); text-decoration: underline; }
    VIEW SYSTEM
    ============================================= */
 #view-login {
-  display: none;
+  display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   min-height: 100vh;
+  width: 100%;
   padding: 20px;
   background: radial-gradient(ellipse at center, #0a0000 0%, #000000 70%);
 }
 
 #view-dashboard {
-  display: none;
+  display: flex;
   flex-direction: column;
   align-items: center;
   min-height: 100vh;
+  width: 100%;
 }
-
-
 
 #dashboard-main {
   width: 100%;
-  max-width: 1400px;
+  max-width: 1600px;
+  margin: 0 auto;
   padding: 20px 24px;
   flex: 1;
 }
@@ -1029,7 +1032,7 @@ tbody tr:hover {
 
 .fagtax-counter-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   gap: 12px;
 }
 
@@ -1127,6 +1130,14 @@ tbody tr:hover {
   box-shadow: 0 0 25px var(--orange-glow);
 }
 
+#dashboard-main {
+  width: 100%;
+  max-width: 1600px;
+  margin: 0 auto;
+  padding: 20px 24px;
+  flex: 1;
+}
+
 /* =============================================
    FOOTER
    ============================================= */
@@ -1135,10 +1146,10 @@ tbody tr:hover {
   justify-content: space-between;
   align-items: center;
   padding: 16px 24px;
-  margin-top: auto;
+  margin: auto auto 0 auto;
   border-top: 1px solid var(--border);
   width: 100%;
-  max-width: 1400px;
+  max-width: 1600px;
 }
 
 .user-badge {
@@ -1449,199 +1460,568 @@ tbody tr:hover {
 /* =============================================
    RESPONSIVE
    ============================================= */
-@media (max-width: 768px) {
+
+/* Inactivity warning toast */
+.toast--warning {
+  background: linear-gradient(135deg, #f39c12, #e67e22) !important;
+  border-left: 4px solid #d35400 !important;
+  color: #000 !important;
+}
+
+.hidden, #view-login.hidden, #view-dashboard.hidden { display: none !important; }
+
+/* --- PWA HINT --- */
+.pwa-hint {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%) translateY(150%);
+  z-index: 9999;
+  width: calc(100% - 40px);
+  max-width: 500px;
+  background: rgba(10, 0, 0, 0.95);
+  border: 1px solid var(--red);
+  border-radius: 12px;
+  box-shadow: 0 10px 40px rgba(255, 23, 68, 0.3), 0 0 20px var(--red-glow);
+  transition: transform 0.6s cubic-bezier(0.19, 1, 0.22, 1);
+  backdrop-filter: blur(10px);
+  animation: pwa-float 3s ease-in-out infinite;
+}
+
+@keyframes pwa-float {
+  0%, 100% { box-shadow: 0 10px 40px rgba(255, 23, 68, 0.3), 0 0 20px var(--red-glow); }
+  50% { box-shadow: 0 10px 50px rgba(255, 23, 68, 0.5), 0 0 30px var(--red-glow); }
+}
+
+.pwa-hint:not(.hidden) {
+  transform: translateX(-50%) translateY(0);
+}
+
+.pwa-hint-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 16px;
+  padding: 10px;
+}
+
+.pwa-icon { font-size: 2.5rem; }
+.pwa-text { width: 100%; }
+.pwa-text strong { display: block; font-size: 1.1rem; color: var(--red); margin-bottom: 6px; }
+.pwa-text p { font-size: 0.85rem; color: var(--text-dim); margin: 0; line-height: 1.4; }
+
+.pwa-actions {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  gap: 10px;
+  margin-top: 5px;
+}
+
+.pwa-close {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--text-dim);
+  font-size: 0.8rem;
+  padding: 10px;
+  cursor: pointer;
+  width: 100%;
+  border-radius: 6px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.pwa-close:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text);
+}
+
+.pwa-share-icon::before {
+  content: '⎋';
+  display: inline-block;
+  transform: rotate(180deg);
+  font-weight: 900;
+  color: var(--red);
+}
+
+/* =============================================
+   MOBILE OVERHAUL (PWA & MOBILE BROWSER)
+   ============================================= */
+
+@media (max-width: 850px) {
+  /* --- RESET & LAYOUT --- */
+  html, body {
+    overflow-x: hidden;
+    width: 100%;
+    position: relative;
+  }
+
+  #view-dashboard {
+    display: block; /* Removed !important to let .hidden rule win */
+    width: 100% !important;
+    max-width: 100% !important;
+    padding: 0;
+    margin: 0;
+    min-height: 100vh;
+    min-height: 100dvh;
+    overflow-x: hidden;
+  }
+
+  #view-login {
+    width: 100% !important;
+    max-width: 100% !important;
+    padding: 20px !important;
+  }
+
   #dashboard-main {
+    display: block; /* Removed !important */
+    width: 100% !important;
+    max-width: 100% !important;
+    padding: 0 0 80px 0; /* Extra padding for the fixed footer */
+    margin: 0;
+    overflow-x: hidden;
+  }
+
+  #dom-panel {
+    display: flex; /* Remove !important so JS can hide it for subs */
+    flex-direction: column !important; 
+    width: 100% !important;
+    max-width: 100% !important;
+    padding: 0;
+    margin: 0;
+  }
+
+  /* --- APP-LIKE CARDS --- */
+  .card {
+    margin: 0 0 8px 0;
+    border-radius: 0;
+    border-left: none;
+    border-right: none;
+    padding: 16px 12px;
+    overflow: hidden; /* Prevent content from sticking out */
+    width: 100%;
+    box-sizing: border-box;
+  }
+
+  .card-header {
+    padding: 0 0 12px 0;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 12px;
+  }
+
+  /* --- HEADER (Sticky App Bar) --- */
+  .dash-header {
+    position: sticky;
+    top: 0;
+    z-index: 1000;
+    background: var(--bg-surface);
+    border-bottom: 1px solid var(--border-red-bright);
+    margin-bottom: 0;
+    padding: 0;
+  }
+
+  .dash-header-inner {
+    padding: 12px 16px;
+  }
+
+  .dash-top-row {
+    flex-direction: row !important; /* Title and total stay in row but more compact */
+    align-items: center;
+    justify-content: space-between;
+    padding-bottom: 0;
+    border-bottom: none;
+    gap: 8px;
+  }
+
+  .dash-title-block h2 {
+    font-size: 1rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 150px;
+  }
+
+  .dash-subtitle {
+    display: none; /* Hide to save space */
+  }
+
+  .total-box {
+    padding: 6px 12px;
+    min-width: 100px;
+  }
+
+  .total-amount {
+    font-size: 1.1rem;
+  }
+
+  .dash-message {
+    margin-top: 8px;
+    font-size: 0.7rem !important;
+    padding: 8px 12px;
+    border-radius: 4px;
+  }
+
+  /* --- TABLE TO CARD CONVERSION --- */
+  /* This targets ANY table and turns it into cards */
+  .table-wrapper {
+    overflow-x: visible;
+  }
+
+  table, thead, tbody, th, td, tr {
+    display: block;
+    width: 100%;
+  }
+
+  thead {
+    display: none; /* Hide headers */
+  }
+
+  tbody tr {
+    margin-bottom: 12px;
+    border: 1px solid var(--border);
+    background: var(--bg-surface);
     padding: 12px;
+    border-radius: 8px;
   }
 
-  .login-container {
-    padding: 24px 16px;
+  td {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 0 !important;
+    border: none !important;
+    text-align: right;
   }
 
+  td::before {
+    content: attr(data-label);
+    font-weight: 700;
+    color: var(--text-dim);
+    font-size: 0.6rem;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    flex-shrink: 0;
+    margin-right: 16px;
+    text-align: left;
+  }
+
+  /* Specific TD overrides */
+  .date { font-size: 0.75rem; }
+  .amount { font-size: 1rem; }
+  .sub-cell { font-size: 0.8rem; }
+  .desc { 
+    flex-direction: column;
+    align-items: flex-end;
+    text-align: right;
+  }
+  .desc::before { margin-bottom: 4px; }
+
+  /* FAG-TAX Live Table specific card styles */
+  .fagtax-table tbody tr {
+    border-left: 3px solid var(--red);
+  }
+
+  /* --- FORMS --- */
   .form-row {
     flex-direction: column;
     gap: 0;
   }
 
-  .form-row .form-group {
-    min-width: 100%;
+  .form-group input, .form-group select {
+    font-size: 16px !important; /* Prevents iOS zoom */
+    min-height: 48px;
   }
 
+  .btn {
+    min-height: 48px;
+    font-size: 0.8rem;
+  }
+
+  /* --- SUBS LIST --- */
   .sub-row {
     flex-direction: column;
-    align-items: flex-start;
+    align-items: stretch;
+    padding: 16px;
+  }
+
+  .sub-info {
+    margin-bottom: 12px;
+    justify-content: space-between;
   }
 
   .sub-actions {
-    width: 100%;
+    justify-content: stretch;
   }
 
   .sub-actions button {
     flex: 1;
-    text-align: center;
   }
 
-  .sub-edit-fields {
-    flex-direction: column;
-  }
-
-  .sub-edit-fields .form-group {
-    min-width: 100%;
-  }
-
-  .sub-edit-actions button {
-    flex: 1;
-  }
-
-  .fagtax-counter-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .total-box {
-    text-align: center;
-    min-width: auto;
-    width: 100%;
-  }
-
-  .dash-top-row {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .filter-row {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  table { font-size: 0.7rem; }
-
-  thead th {
-    padding: 10px 8px;
-    font-size: 0.6rem;
-  }
-
-  tbody td {
-    padding: 10px 8px;
-    font-size: 0.7rem;
-  }
-
+  /* --- OVERLAYS & MODALS --- */
   .overlay-panel {
-    max-width: 100%;
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0;
+    height: 100%;
+    max-height: 100%;
+    border-radius: 0 !important;
   }
 
-  #login-overlay .overlay-panel {
-    padding: 24px 16px;
-  }
-
-  .sub-config-row {
-    justify-content: center;
-  }
-
-  .toast-container {
-    left: 12px;
-    right: 12px;
-    bottom: 12px;
-    max-width: none;
-  }
-}
-
-@media (max-width: 480px) {
-  .dash-title-block h2 {
-    font-size: 1.05rem;
-    letter-spacing: 0.06em;
-  }
-
-  .btn {
-    font-size: 0.65rem;
-    padding: 10px 16px;
-    min-height: 44px; /* iOS minimum touch target */
-  }
-
-  .login-logo {
-    font-size: 1.6rem;
-  }
-
-  .login-container h1 {
-    font-size: 1.1rem;
-  }
-
-  .login-form input {
-    font-size: 0.8rem;
-    padding: 12px 14px;
-    min-height: 44px;
-  }
-
-  #login-btn {
-    font-size: 0.75rem;
-    padding: 12px;
-    min-height: 48px;
-  }
-
-  .total-amount {
-    font-size: 1.3rem;
-  }
-
-  .ft-bill-amount {
-    font-size: 1.5rem;
-  }
-
-  .fagtax-table thead th {
-    font-size: 0.6rem;
-    padding: 8px 6px;
-  }
-
-  .fagtax-table tbody td {
-    font-size: 0.65rem;
-    padding: 8px 6px;
-  }
-
-  .btn-check-account {
-    font-size: 0.75rem;
-    padding: 14px 24px;
-    min-height: 52px;
-  }
-
-  .dash-footer {
+  .modal {
+    height: 100%;
+    display: flex;
     flex-direction: column;
-    gap: 8px;
-    text-align: center;
+    border-radius: 0;
   }
 
   .modal-body {
-    padding: 16px;
-    font-size: 0.8rem;
+    flex: 1;
+    overflow-y: auto;
   }
 
   .modal-footer {
     flex-direction: column;
+    gap: 10px;
   }
 
-  .modal-footer .btn {
-    width: 100%;
-    min-height: 48px;
+  /* --- FOOTER (Bottom Nav) --- */
+  .dash-footer {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: var(--bg-surface);
+    border-top: 1px solid var(--border);
+    padding: 12px 16px;
+    z-index: 1000;
+    flex-direction: row !important;
+    justify-content: space-between;
   }
 
-  .sub-fagtax-section h3 {
-    font-size: 1.1rem;
+  .user-badge {
+    padding: 4px 8px;
+    font-size: 0.6rem;
   }
 
-  .ft-counter-label {
+  #logout-btn {
+    min-height: 36px;
     font-size: 0.65rem;
+  }
+
+  /* --- FAG-TAX COUNTER (Grid Fix) --- */
+  .fagtax-counter-grid {
+    grid-template-columns: 1fr 1fr !important;
+    gap: 8px;
+  }
+
+  .ft-counter-item {
+    padding: 12px 8px;
   }
 
   .ft-counter-value {
-    font-size: 1.2rem;
+    font-size: 1.1rem;
   }
 
-  .ft-counter-cost {
+  /* --- FAG-TAX GROUPS --- */
+  .past-weeks-section {
+    border-top: 1px dashed var(--border);
+    padding-top: 24px;
+    margin-top: 32px;
+  }
+
+  .ft-week-group {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    margin-bottom: 24px;
+  }
+
+  .ft-week-group--live {
+    border: 2px solid var(--red);
+    background: linear-gradient(135deg, var(--bg-card) 0%, rgba(255, 23, 68, 0.05) 100%);
+    box-shadow: 0 0 20px rgba(255, 23, 68, 0.1);
+  }
+
+  .ft-week-header {
+    margin: 0 0 16px 0;
+    font-size: 0.9rem;
+    letter-spacing: 2px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .ft-live-badge {
+    background: var(--red);
+    color: #000;
     font-size: 0.65rem;
+    padding: 2px 6px;
+    border-radius: 2px;
+    font-weight: 900;
+    animation: pulse 2s infinite;
   }
 
-  .overlay-msg {
+  @keyframes pulse {
+    0% { opacity: 1; }
+    50% { opacity: 0.7; }
+    100% { opacity: 1; }
+  }
+
+  /* --- FAG-TAX TABLE TO CARDS --- */
+  .fagtax-table {
+    display: block;
+    width: 100%;
+    border: none;
+  }
+
+  .fagtax-table thead {
+    display: none;
+  }
+
+  .fagtax-table tbody, 
+  .fagtax-table tr, 
+  .fagtax-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .fagtax-table tr {
+    border: 1px solid var(--border-light);
+    border-radius: 6px;
+    padding: 12px;
+    margin-bottom: 12px;
+    background: var(--bg-surface);
+  }
+
+  .fagtax-table td {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 0 !important;
+    border: none !important;
+    border-bottom: 1px solid rgba(255,255,255,0.05) !important;
+    font-size: 0.85rem;
+  }
+
+  .fagtax-table td:last-child {
+    border-bottom: none !important;
+    padding-top: 12px !important;
+    justify-content: center;
+    gap: 8px;
+  }
+
+  .fagtax-table td::before {
+    content: attr(data-label);
+    font-weight: 700;
+    color: var(--text-dim);
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+
+  /* --- FAG-TAX ACCORDION --- */
+  .ft-week-accordion {
+    background: var(--bg-raised);
+    border: 1px solid var(--border);
+    margin-bottom: 8px;
+    border-radius: 4px;
+    overflow: hidden;
+  }
+
+  .ft-week-summary {
+    padding: 12px 16px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    cursor: pointer;
+    font-family: var(--font-mono);
     font-size: 0.8rem;
+    font-weight: 700;
+    list-style: none; /* Hide default arrow */
+    user-select: none;
+    background: linear-gradient(to right, var(--bg-card), var(--bg-raised));
   }
 
-  .dash-message {
-    font-size: 0.75rem;
+  .ft-week-summary::-webkit-details-marker {
+    display: none; /* Hide default arrow Chrome */
   }
+
+  .ft-week-summary::after {
+    content: '▼';
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    transition: transform 0.2s;
+  }
+
+  .ft-week-accordion[open] .ft-week-summary::after {
+    transform: rotate(180deg);
+  }
+
+  .ft-week-date-range {
+    font-weight: 400;
+    font-size: 0.65rem;
+    color: var(--text-dim);
+  }
+
+  .ft-week-group-content {
+    padding: 12px;
+    border-top: 1px solid var(--border);
+    background: var(--bg);
+  }
+
+  /* Ensure tables inside accordion are also cards */
+  .ft-week-accordion table, 
+  .ft-week-accordion tr, 
+  .ft-week-accordion td {
+    display: block;
+    width: 100%;
+  }
+
+  .ft-week-accordion td {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 0 !important;
+    border-bottom: 1px solid var(--border-light) !important;
+  }
+
+  .ft-week-accordion td:last-child {
+    border-bottom: none !important;
+    justify-content: center;
+    padding-top: 12px !important;
+  }
+
+  /* --- ORDERING --- */
+  #dom-panel .card:has(#fagtax-overview) {
+    order: -10; /* FAG-TAX ALWAYS FIRST */
+  }
+
+  #payments-card {
+    order: 10; /* PAYMENTS ALWAYS LAST */
+  }
+
+  /* --- TOASTS --- */
+  .toast-container {
+    bottom: 80px;
+    left: 10px;
+    right: 10px;
+    max-width: none;
+  }
+}
+
+/* Fix for very small phones */
+@media (max-width: 380px) {
+  .dash-title-block h2 { font-size: 0.85rem; }
+  .total-amount { font-size: 1rem; }
+  .fagtax-counter-grid { grid-template-columns: 1fr !important; }
+}
+
+/* --- PRINT --- */
+@media print {
+  @page { margin: 12mm 15mm; size: A4; }
+  body { background: white; color: black; }
+}
 }

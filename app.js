@@ -18,7 +18,8 @@ const CATEGORIES = {
   tribut:   { label: 'TRIBUT',   icon: '🟢', color: '#2ecc71' },
   strafe:   { label: 'STRAFE',   icon: '🔴', color: '#cc0000' },
   training: { label: 'TRAINING', icon: '🟡', color: '#f1c40f' },
-  'fag-tax': { label: 'FAG-TAX', icon: '💰', color: '#b44dff' }
+  'fag-tax': { label: 'FAG-TAX', icon: '💰', color: '#b44dff' },
+  dreck:    { label: 'DRECKSKAUF', icon: '🛒', color: '#e67e22' }
 };
 
 const TAGLINES = {
@@ -148,6 +149,13 @@ let accountChecks = [];
 let unsubscribeAccountChecks = null;
 let lastCheckSessions = null; // Sessions data from last account check (replaces window.__ftSessions)
 
+// Session visibility tracking (Subs only)
+const INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000;  // 5 min hidden → auto-logout
+const INACTIVITY_WARNING_MS = 4 * 60 * 1000;  // 4 min hidden → warning
+let tabHiddenAt = null;           // Timestamp when tab became hidden
+let activeSessionSeconds = 0;     // Only counts visible seconds
+let activeTimeInterval = null;    // 1s tick for active time counting
+
 // =============================================
 // UTILITIES
 // =============================================
@@ -162,23 +170,32 @@ function round2(n) {
 function calculateWeeklyFagTax(sub, weekStart, sessionsArr, paymentsArr, checksArr, opts) {
   opts = opts || {};
   const cfg = getSubFagConfig(sub);
-  const wStart = weekStart instanceof Date ? weekStart : (weekStart && weekStart.seconds ? new Date(weekStart.seconds * 1000) : getLastFriday());
+  const wStart = weekStart instanceof Date ? weekStart : (weekStart && weekStart.seconds ? new Date(weekStart.seconds * 1000) : getCurrentWeekStart());
 
-  // Count logins
+  // Upper bound: end of this week (next Friday 00:00)
+  const wEnd = getWeekEnd(wStart);
+  const isCurrentWeek = wEnd.getTime() > Date.now();
+  // Current week: no upper bound (include everything from wStart onwards)
+  // Past weeks: strict upper bound at wEnd
+  const upperBoundMs = isCurrentWeek ? Infinity : wEnd.getTime();
+
+  // Count logins within week bounds
   const logins = cfg.loginsEnabled !== false
     ? sessionsArr.filter(s =>
         s.subId === sub.id &&
         s.loginTime && s.loginTime.seconds &&
-        s.loginTime.seconds * 1000 >= wStart.getTime()
+        s.loginTime.seconds * 1000 >= wStart.getTime() &&
+        s.loginTime.seconds * 1000 < upperBoundMs
       ).length
     : 0;
 
-  // Sum seconds (closed sessions)
+  // Sum seconds within week bounds (closed sessions)
   const closedSeconds = cfg.minutesEnabled !== false
     ? sessionsArr.filter(s =>
         s.subId === sub.id &&
         s.loginTime && s.loginTime.seconds &&
-        s.loginTime.seconds * 1000 >= wStart.getTime()
+        s.loginTime.seconds * 1000 >= wStart.getTime() &&
+        s.loginTime.seconds * 1000 < upperBoundMs
       ).reduce((sum, s) => sum + (s.durationSeconds || s.durationMinutes * 60 || 0), 0)
     : 0;
 
@@ -205,9 +222,11 @@ function calculateWeeklyFagTax(sub, weekStart, sessionsArr, paymentsArr, checksA
 
   const taxAmount = cfg.taxEnabled !== false ? round2(yearTotal * taxRate) : 0;
 
-  // Account check costs
+  // Account check costs within week bounds
   const checkCost = round2(checksArr
-    .filter(c => c.subId === sub.id && c.createdAt && c.createdAt.seconds && c.createdAt.seconds * 1000 >= wStart.getTime())
+    .filter(c => c.subId === sub.id && c.createdAt && c.createdAt.seconds &&
+            c.createdAt.seconds * 1000 >= wStart.getTime() &&
+            c.createdAt.seconds * 1000 < upperBoundMs)
     .reduce((s, c) => s + (c.amount || 0), 0));
 
   const baseAmount = round2(loginCost + timeCost + taxAmount + checkCost);
@@ -293,7 +312,8 @@ function showSetupScreen() {
 // =============================================
 function checkSession() {
   try {
-    const raw = localStorage.getItem('findom_session');
+    // Check sessionStorage first (subs, survives refresh), then localStorage (dom, persistent)
+    const raw = sessionStorage.getItem('findom_session') || localStorage.getItem('findom_session');
     if (!raw) return false;
     const user = JSON.parse(raw);
     if (user && user.role) { currentUser = user; return true; }
@@ -302,7 +322,14 @@ function checkSession() {
 }
 
 function saveSession() {
-  try { localStorage.setItem('findom_session', JSON.stringify(currentUser)); } catch (_) {}
+  try {
+    if (currentUser.role === 'dom') {
+      localStorage.setItem('findom_session', JSON.stringify(currentUser));
+    } else {
+      // Subs: sessionStorage survives page refresh but NOT tab close
+      sessionStorage.setItem('findom_session', JSON.stringify(currentUser));
+    }
+  } catch (_) {}
 }
 
 async function loginDom(password) {
@@ -334,23 +361,52 @@ async function loginSub(username, password) {
 }
 
 async function logout() {
+  // 1. Immediate UI Feedback
+  cleanupDynamicSubUI();
+  showLoginView();
+
+  // 2. Clear all background tasks
   if (heartbeatInterval) { clearInterval(heartbeatInterval); heartbeatInterval = null; }
+  if (activeTimeInterval) { clearInterval(activeTimeInterval); activeTimeInterval = null; }
   if (liveInterval) { clearInterval(liveInterval); liveInterval = null; }
-  if (currentSessionId) { await closeSessionAsync(currentSessionId); }
+
+  // 3. Close session (non-blocking for UI)
+  const sessionIdToClose = currentSessionId;
+  currentSessionId = null;
+  currentSessionStart = 0;
+  if (sessionIdToClose) { closeSessionAsync(sessionIdToClose).catch(console.warn); }
+
+  // 4. Remove listeners
   window.removeEventListener('beforeunload', handleBeforeUnload);
   window.removeEventListener('pagehide', handlePageHide);
   document.removeEventListener('visibilitychange', handleVisibilityChange);
+  
+  // 5. Unsubscribe all Firestore listeners
   if (unsubscribePayments) { unsubscribePayments(); unsubscribePayments = null; }
   if (unsubscribeSubs) { unsubscribeSubs(); unsubscribeSubs = null; }
   if (unsubscribeSessions) { unsubscribeSessions(); unsubscribeSessions = null; }
   if (unsubscribeFagTaxes) { unsubscribeFagTaxes(); unsubscribeFagTaxes = null; }
   if (unsubscribeAccountChecks) { unsubscribeAccountChecks(); unsubscribeAccountChecks = null; }
-  currentUser = null; payments = []; subs = []; sessions = []; fagTaxes = []; accountChecks = [];
-  filterSubId = 'all'; // #16: Reset filter on logout
-  lastCheckSessions = null; // #18: Clear cached sessions
+
+  // 6. Reset state
+  currentUser = null; 
+  payments = []; 
+  subs = []; 
+  sessions = []; 
+  fagTaxes = []; 
+  accountChecks = [];
+  filterSubId = 'all';
+  lastCheckSessions = null;
+  activeSessionSeconds = 0;
+  tabHiddenAt = null;
+
+  // 7. Clear persistence
   try { localStorage.removeItem('findom_session'); } catch (_) {}
-  cleanupDynamicSubUI(); // #1: Remove dynamically inserted Sub-UI elements
-  showLoginView();
+  try {
+    sessionStorage.removeItem('findom_session');
+    sessionStorage.removeItem('findom_sessionId');
+    sessionStorage.removeItem('findom_activeSeconds');
+  } catch (_) {}
 }
 
 // #1: Clean up dynamically inserted Sub-UI elements
@@ -379,8 +435,19 @@ async function startSession() {
     });
     currentSessionId = ref.id;
     currentSessionStart = Date.now();
+    activeSessionSeconds = 0;
+    tabHiddenAt = null;
+
+    // Save sessionId for refresh recovery
+    try { sessionStorage.setItem('findom_sessionId', currentSessionId); } catch (_) {}
+
     if (heartbeatInterval) clearInterval(heartbeatInterval);
     heartbeatInterval = setInterval(() => heartbeat(), 30000);
+
+    // Start active time ticker (1s) — only counts visible seconds
+    if (activeTimeInterval) clearInterval(activeTimeInterval);
+    activeTimeInterval = setInterval(tickActiveTime, 1000);
+
     window.addEventListener('beforeunload', handleBeforeUnload);
     window.addEventListener('pagehide', handlePageHide);
     document.addEventListener('visibilitychange', handleVisibilityChange);
@@ -404,11 +471,102 @@ function handlePageHide() {
   closeSessionOnUnload();
 }
 
-// Only track visibility for heartbeat optimization, NOT session closing.
-// Tab switch ≠ session end. Session ends only on tab close/navigate away.
+// Visibility-based session tracking for Subs.
+// Tab hidden → pause heartbeat + stop counting time.
+// Tab visible → resume (or auto-logout if hidden too long).
 function handleVisibilityChange() {
-  // No-op: heartbeat system handles stale detection.
-  // closeSessionOnUnload only fires from beforeunload/pagehide.
+  if (!currentUser || currentUser.role !== 'sub') return;
+
+  if (document.hidden) {
+    // Tab hidden → pause heartbeat, mark timestamp
+    tabHiddenAt = Date.now();
+    if (heartbeatInterval) { clearInterval(heartbeatInterval); heartbeatInterval = null; }
+  } else {
+    // Tab visible again
+    if (tabHiddenAt) {
+      const hiddenMs = Date.now() - tabHiddenAt;
+
+      if (hiddenMs >= INACTIVITY_TIMEOUT_MS) {
+        // >5 min hidden → auto-logout
+        autoLogoutSub();
+        return;
+      }
+
+      if (hiddenMs >= INACTIVITY_WARNING_MS) {
+        // 4–5 min hidden → warning
+        const warnings = [
+          'Na, fertig gewichst? Timer läuft wieder... Loser. 💀',
+          'Du warst weg? Dachte schon du heulst. Willst du weiter zugucken, wie dein Geld schmilzt? 💸',
+          'Zurück? Schön. Dein Konto hat dich vermisst. Also… DEIN Geld hat MICH vermisst. 🐷',
+          'Fast hätt ich dich rausgeworfen. Aber du willst ja weiterzahlen, oder? 😈',
+          'Ach, du lebst noch? Dein Timer auch. Tick tack, Geldschwein. ⏰'
+        ];
+        showToast(warnings[Math.floor(Math.random() * warnings.length)], 'warning');
+      }
+
+      tabHiddenAt = null;
+    }
+
+    // Resume heartbeat
+    if (currentSessionId) {
+      if (heartbeatInterval) clearInterval(heartbeatInterval);
+      heartbeatInterval = setInterval(() => heartbeat(), 30000);
+      heartbeat();
+    }
+  }
+}
+
+// Tick active session time — only when tab is visible
+function tickActiveTime() {
+  if (!document.hidden && currentSessionId) {
+    activeSessionSeconds++;
+  }
+}
+
+// Auto-logout sub after inactivity timeout
+async function autoLogoutSub() {
+  const msgs = [
+    'Session abgelaufen. 5 Minuten weg? Du Loser. Log dich wieder ein — kostet dich wieder 1€. 💸',
+    'Weg gewesen? Session beendet. Mein Timer wartet nicht auf Loser wie dich. Einloggen = zahlen. 💀',
+    'Auto-Logout. Du hast meine App vergessen? Gut, sie vergisst DICH nie. Komm zurück und zahl. 🐷'
+  ];
+
+  // Close session with only visible seconds counted
+  if (currentSessionId) {
+    try {
+      const secs = Math.max(1, activeSessionSeconds);
+      const mins = Math.max(1, Math.round(secs / 60));
+      await db.collection('sessions').doc(currentSessionId).update({
+        active: false,
+        logoutTime: firebase.firestore.FieldValue.serverTimestamp(),
+        durationSeconds: secs,
+        durationMinutes: mins
+      });
+    } catch (e) { console.error('Auto-logout session close error:', e); }
+  }
+
+  // Clear all intervals
+  if (heartbeatInterval) { clearInterval(heartbeatInterval); heartbeatInterval = null; }
+  if (activeTimeInterval) { clearInterval(activeTimeInterval); activeTimeInterval = null; }
+  if (liveInterval) { clearInterval(liveInterval); liveInterval = null; }
+
+  currentSessionId = null;
+  currentSessionStart = 0;
+  activeSessionSeconds = 0;
+  tabHiddenAt = null;
+
+  // Clear session storage
+  try {
+    sessionStorage.removeItem('findom_session');
+    sessionStorage.removeItem('findom_sessionId');
+    sessionStorage.removeItem('findom_activeSeconds');
+  } catch (_) {}
+
+  // Show login screen with degrading message
+  currentUser = null;
+  cleanupDynamicSubUI();
+  showLoginView();
+  showToast(msgs[Math.floor(Math.random() * msgs.length)], 'error');
 }
 
 // Fire-and-forget session close for page unload (tab close / navigate away).
@@ -416,10 +574,11 @@ function handleVisibilityChange() {
 function closeSessionOnUnload() {
   if (!currentSessionId) return;
   const sessionId = currentSessionId;
-  const nowMs = Date.now();
-  const loginMs = currentSessionStart || nowMs;
-  const secs = Math.max(1, Math.round((nowMs - loginMs) / 1000));
+  const secs = Math.max(1, activeSessionSeconds || 1);
   const mins = Math.max(1, Math.round(secs / 60));
+
+  // Save activeSeconds for potential refresh recovery
+  try { sessionStorage.setItem('findom_activeSeconds', String(activeSessionSeconds)); } catch (_) {}
 
   // Primary: Firestore REST API with keepalive (survives page unload)
   try {
@@ -453,13 +612,14 @@ function closeSessionOnUnload() {
   } catch (e) {}
 
   if (heartbeatInterval) { clearInterval(heartbeatInterval); heartbeatInterval = null; }
+  if (activeTimeInterval) { clearInterval(activeTimeInterval); activeTimeInterval = null; }
   if (liveInterval) { clearInterval(liveInterval); liveInterval = null; }
   currentSessionId = null;
   currentSessionStart = 0;
 }
 
 // Async session close for programmatic use (explicit logout button).
-// Reads actual loginTime from Firestore for precise duration calculation.
+// Uses activeSessionSeconds for visibility-aware duration.
 async function closeSessionAsync(sessionId) {
   if (!db || !sessionId) return;
   try {
@@ -467,9 +627,7 @@ async function closeSessionAsync(sessionId) {
     if (!snap.exists) return;
     const data = snap.data();
     if (!data.active) return;
-    const loginMs = data.loginTime ? data.loginTime.seconds * 1000 : (currentSessionStart || Date.now());
-    const nowMs = Date.now();
-    const secs = Math.max(1, Math.round((nowMs - loginMs) / 1000));
+    const secs = Math.max(1, activeSessionSeconds || 1);
     const mins = Math.max(1, Math.round(secs / 60));
     await db.collection('sessions').doc(sessionId).update({
       logoutTime: firebase.firestore.FieldValue.serverTimestamp(),
@@ -479,6 +637,7 @@ async function closeSessionAsync(sessionId) {
     });
   } catch (e) { console.error('Session close error:', e); }
   if (heartbeatInterval) { clearInterval(heartbeatInterval); heartbeatInterval = null; }
+  if (activeTimeInterval) { clearInterval(activeTimeInterval); activeTimeInterval = null; }
   if (liveInterval) { clearInterval(liveInterval); liveInterval = null; }
   currentSessionId = null;
   currentSessionStart = 0;
@@ -511,6 +670,51 @@ async function closeStaleSessions() {
   } catch (_) {}
 }
 
+// Resume existing session (page refresh) or start a new one.
+// On refresh, sessionStorage still has the sessionId → reactivate instead of creating a new login.
+async function resumeOrStartSession() {
+  if (!db || !currentUser || currentUser.role !== 'sub') return;
+
+  const savedSessionId = sessionStorage.getItem('findom_sessionId');
+  const savedActiveSeconds = parseInt(sessionStorage.getItem('findom_activeSeconds') || '0');
+
+  if (savedSessionId) {
+    try {
+      const doc = await db.collection('sessions').doc(savedSessionId).get();
+      if (doc.exists) {
+        const data = doc.data();
+        // Reactivate: this is a page refresh, not a new visit
+        await doc.ref.update({
+          active: true,
+          lastHeartbeat: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        currentSessionId = savedSessionId;
+        currentSessionStart = data.loginTime?.seconds ? data.loginTime.seconds * 1000 : Date.now();
+        activeSessionSeconds = savedActiveSeconds;
+        tabHiddenAt = null;
+
+        // Restart intervals
+        if (heartbeatInterval) clearInterval(heartbeatInterval);
+        heartbeatInterval = setInterval(() => heartbeat(), 30000);
+        if (activeTimeInterval) clearInterval(activeTimeInterval);
+        activeTimeInterval = setInterval(tickActiveTime, 1000);
+
+        window.addEventListener('beforeunload', handleBeforeUnload);
+        window.addEventListener('pagehide', handlePageHide);
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+        console.log('Session resumed:', savedSessionId, 'activeSeconds:', savedActiveSeconds);
+        return;
+      }
+    } catch (e) {
+      console.warn('Session resume failed, starting new:', e);
+    }
+  }
+
+  // No saved session or resume failed → fresh login
+  await closeStaleSessions();
+  await startSession();
+}
+
 // Real-time listener for ALL sessions (DOM view).
 // Automatically updates when any sub logs in/out — no manual refresh needed.
 function startAllSessionsListener() {
@@ -519,7 +723,7 @@ function startAllSessionsListener() {
 
   unsubscribeSessions = db.collection('sessions')
     .onSnapshot(snap => {
-      const weekStart = getLastFriday();
+      const weekStart = getCurrentWeekStart();
       sessions = [];
       snap.forEach(d => {
         const data = { id: d.id, ...d.data() };
@@ -541,7 +745,7 @@ function startSubSessionsListener() {
   unsubscribeSessions = db.collection('sessions')
     .where('subId', '==', currentUser.uid)
     .onSnapshot(snap => {
-      const weekStart = getLastFriday();
+      const weekStart = getCurrentWeekStart();
       sessions = [];
       snap.forEach(d => {
         const data = { id: d.id, ...d.data() };
@@ -555,9 +759,12 @@ function startSubSessionsListener() {
     }, err => console.warn('Sub sessions listener error:', err.message));
 }
 
-async function fetchSubSessions(subId) {
+async function fetchSubSessions(subId, weekStartOverride) {
   if (!db) return [];
-  const weekStart = getLastFriday();
+  const weekStart = weekStartOverride || getCurrentWeekStart();
+  const weekEnd = getWeekEnd(weekStart);
+  const isCurrentWeek = weekEnd.getTime() > Date.now();
+  const upperBoundMs = isCurrentWeek ? Infinity : weekEnd.getTime();
   try {
     const snap = await db.collection('sessions')
       .where('subId', '==', subId)
@@ -565,7 +772,9 @@ async function fetchSubSessions(subId) {
     const results = [];
     snap.forEach(d => {
       const s = { id: d.id, ...d.data() };
-      if (s.loginTime && s.loginTime.seconds && s.loginTime.seconds * 1000 >= weekStart.getTime()) {
+      if (s.loginTime && s.loginTime.seconds &&
+          s.loginTime.seconds * 1000 >= weekStart.getTime() &&
+          s.loginTime.seconds * 1000 < upperBoundMs) {
         results.push(s);
       }
     });
@@ -575,46 +784,173 @@ async function fetchSubSessions(subId) {
   }
 }
 
+async function fetchAllSubSessions(subId) {
+  if (!db) return [];
+  try {
+    const snap = await db.collection('sessions').where('subId', '==', subId).get();
+    const results = [];
+    snap.forEach(d => results.push({ id: d.id, ...d.data() }));
+    return results;
+  } catch (e) { return []; }
+}
+
+function groupSessionsByWeek(sessions) {
+  const map = new Map();
+  sessions.forEach(s => {
+    if (!s.loginTime || !s.loginTime.seconds) return;
+    const loginDate = new Date(s.loginTime.seconds * 1000);
+    const weekStart = getWeekStartForDate(loginDate);
+    const key = weekStart.getTime();
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(s);
+  });
+  return map;
+}
+
 // =============================================
 // VIEW MANAGEMENT
 // =============================================
 function showLoginView() {
   loginError.textContent = ''; loginPassword.value = ''; loginUsername.value = '';
-  viewLogin.style.display = 'flex'; viewDashboard.style.display = 'none';
-  dashboardMain.style.display = 'flex'; setupMessage.style.display = 'none';
+  
+  // Hide EVERYTHING else
+  viewDashboard.classList.add('hidden');
+  viewDashboard.style.display = 'none';
+  
+  // Show Login
+  viewLogin.classList.remove('hidden');
+  viewLogin.style.display = 'flex'; 
+  
   updateLoginFields();
+  showPwaHintIfNeeded();
 }
 
 function showDashboardView() {
-  viewLogin.style.display = 'none'; viewDashboard.style.display = 'flex';
-  dashboardMain.style.display = 'flex'; setupMessage.style.display = 'none';
-  cleanupDynamicSubUI(); // #1: Always clean up before rendering new view
+  // Hide Login
+  viewLogin.classList.add('hidden');
+  viewLogin.style.display = 'none';
+  
+  // Show Dashboard
+  viewDashboard.classList.remove('hidden');
+  viewDashboard.style.display = 'block';
+  
+  dashboardMain.style.display = 'block';
+  setupMessage.style.display = 'none';
+  cleanupDynamicSubUI();
   renderDashboard();
+
+  // Start real-time listeners
   startPaymentListener();
   if (currentUser.role === 'dom') {
     startSubsListener();
     startFagTaxesListener();
-    startAllSessionsListener(); // Real-time listener for all sessions
+    startAllSessionsListener(); 
     startAccountChecksListener();
-    // Delay autoCreateFagTaxes to let session listener populate data first
-    setTimeout(() => autoCreateFagTaxes(), 5000);
-  }
-  if (currentUser.role === 'sub') {
-    startSubsListener(); // Needed so subCheckAccount can find the sub in the subs array
+    
+    // Auto-maintenance (Dom only)
+    setTimeout(async () => {
+      await autoCloseCompletedWeeks();
+      await autoCreateFagTaxes();
+    }, 5000);
+  } else {
+    startSubsListener(); // Needed so subCheckAccount can find the sub
     startFagTaxesListener();
     startAccountChecksListener();
-    startSubSessionsListener(); // Real-time listener for own sessions
+    startSubSessionsListener();
     renderSubFagTaxView();
-    // #20: Delay showLoginMessage until subs data is available
-    const waitForSubs = setInterval(() => {
-      if (subs.length > 0 || !db) {
-        clearInterval(waitForSubs);
-        showLoginMessage();
+
+    // Show login message for fresh logins
+    const isFreshLogin = !!currentSessionId;
+    if (isFreshLogin) {
+      const waitForSubs = setInterval(() => {
+        if (subs.length > 0 || !db) {
+          clearInterval(waitForSubs);
+          showLoginMessage();
+        }
+      }, 200);
+      setTimeout(() => clearInterval(waitForSubs), 5000);
+    }
+  }
+  showPwaHintIfNeeded();
+}
+
+// =============================================
+// PROGRESSIVE WEB APP (PWA)
+// =============================================
+let deferredPrompt = null;
+
+window.addEventListener('beforeinstallprompt', (e) => {
+  // Prevent Chrome 67 and earlier from automatically showing the prompt
+  e.preventDefault();
+  // Stash the event so it can be triggered later.
+  deferredPrompt = e;
+  // Update UI notify the user they can add to home screen
+  const installBtn = $('pwa-install-btn');
+  if (installBtn) installBtn.style.display = 'inline-block';
+});
+
+function showPwaHintIfNeeded() {
+  const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+  const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
+  const forceShow = window.location.search.includes('pwa=1');
+  const hint = $('pwa-hint');
+  if (!hint) return;
+  
+  if ((isMobile || forceShow) && !isStandalone) {
+    setTimeout(() => {
+      hint.classList.remove('hidden');
+    }, 2000);
+    
+    // Platform-specific logic
+    const installBtn = $('pwa-install-btn');
+    const icon = qs('.pwa-share-icon', hint);
+    const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
+    const isAndroid = /Android/.test(navigator.userAgent);
+    const isChrome = /Chrome/.test(navigator.userAgent) && !/Edge|OPR/.test(navigator.userAgent);
+
+    if (isIOS) {
+      // iOS: Hide button, show share icon instructions
+      if (installBtn) installBtn.style.display = 'none';
+      if (icon) {
+        icon.style.display = 'inline-block';
+        icon.innerHTML = '⎋'; // Simple share-like icon
       }
-    }, 200);
-    setTimeout(() => clearInterval(waitForSubs), 5000); // Safety timeout
+    } else if (deferredPrompt) {
+      // Android/Chrome with native support: Show button
+      if (installBtn) installBtn.style.display = 'inline-block';
+      if (icon) icon.style.display = 'none';
+    } else if (forceShow || isAndroid || isChrome) {
+      // Desktop or Android without prompt yet: Show button but explain fallback
+      if (installBtn) installBtn.style.display = 'inline-block';
+    }
   }
 }
+
+function hidePwaHint() {
+  const hint = $('pwa-hint');
+  if (hint) hint.classList.add('hidden');
+}
+
+async function installPwa() {
+  if (!deferredPrompt) {
+    showAlert('HINWEIS', 'Dein Browser hat den direkten Installations-Dialog noch nicht freigeschaltet. Bitte nutze das Browser-Menü (⋮) und wähle "App installieren" oder "Zum Startbildschirm hinzufügen".');
+    return;
+  }
+  try {
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    console.log(`PWA install outcome: ${outcome}`);
+    deferredPrompt = null;
+    hidePwaHint();
+  } catch (err) {
+    console.error('PWA install error:', err);
+    hidePwaHint();
+  }
+}
+
+document.getElementById('pwa-close')?.addEventListener('click', hidePwaHint);
+document.getElementById('pwa-install-btn')?.addEventListener('click', installPwa);
+
 
 function updateLoginFields() {
   const role = qs('.tab.active').dataset.role;
@@ -738,18 +1074,48 @@ function startFagTaxesListener() {
   }, err => console.warn('FagTax listener error:', err.message));
 }
 
-// getWeekStart() removed (#12) — was dead code, use getLastFriday() instead
+// getWeekStart() removed (#12) — was dead code, use getCurrentWeekStart() instead
 
-function getLastFriday() {
-  const d = new Date();
-  const day = d.getDay();
-  if (day === 5) {
-    d.setDate(d.getDate() - 7);
-  } else {
-    while (d.getDay() !== 5) d.setDate(d.getDate() - 1);
-  }
+// Woche = Freitag 00:00 bis Donnerstag 23:59:59
+// Gibt den Freitag zurück, der die aktuelle Woche eingeleitet hat
+function getCurrentWeekStart() {
+  const now = new Date();
+  const day = now.getDay(); // 0=So, 1=Mo, ..., 5=Fr, 6=Sa
+  const d = new Date(now);
+  // Fr(5)→0, Sa(6)→1, So(0)→2, Mo(1)→3, Di(2)→4, Mi(3)→5, Do(4)→6
+  const daysBack = (day + 2) % 7;
+  d.setDate(d.getDate() - daysBack);
   d.setHours(0, 0, 0, 0);
   return d;
+}
+
+// Ende der Woche (nächster Freitag 00:00:00)
+function getWeekEnd(weekStart) {
+  const d = new Date(weekStart);
+  d.setDate(d.getDate() + 7);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+// Wochenstart für ein beliebiges Datum berechnen
+function getWeekStartForDate(date) {
+  const d = new Date(date);
+  const day = d.getDay();
+  const daysBack = (day + 2) % 7;
+  d.setDate(d.getDate() - daysBack);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+// Format: "Freitag, den DD.MM.YYYY bis Donnerstag, den DD.MM.YYYY"
+function formatWeekRange(weekStart) {
+  const ws = new Date(weekStart);
+  ws.setHours(0, 0, 0, 0);
+  const we = new Date(ws);
+  we.setDate(we.getDate() + 6); // Donnerstag
+  const wsStr = ws.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  const weStr = we.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  return `Freitag, den ${wsStr} bis Donnerstag, den ${weStr}`;
 }
 
 function getSubFagConfig(sub) {
@@ -757,7 +1123,7 @@ function getSubFagConfig(sub) {
 }
 
 function countWeeklyLogins(subId, sessions) {
-  const weekStart = getLastFriday();
+  const weekStart = getCurrentWeekStart();
   return sessions.filter(s =>
     s.subId === subId &&
     s.loginTime && s.loginTime.seconds &&
@@ -766,7 +1132,7 @@ function countWeeklyLogins(subId, sessions) {
 }
 
 function sumWeeklyMinutes(subId, sessions) {
-  const weekStart = getLastFriday();
+  const weekStart = getCurrentWeekStart();
   return sessions.filter(s =>
     s.subId === subId &&
     s.loginTime && s.loginTime.seconds &&
@@ -775,7 +1141,7 @@ function sumWeeklyMinutes(subId, sessions) {
 }
 
 function sumWeeklySeconds(subId, sessions) {
-  const weekStart = getLastFriday();
+  const weekStart = getCurrentWeekStart();
   return sessions.filter(s =>
     s.subId === subId &&
     s.loginTime && s.loginTime.seconds &&
@@ -785,18 +1151,12 @@ function sumWeeklySeconds(subId, sessions) {
   }, 0);
 }
 
+// Returns only the actively-visible seconds for the current session.
+// Used by the live FAG-TAX counter to show real visible-only duration.
 function getLiveSessionSeconds() {
   if (!currentSessionId) return 0;
-  const active = sessions.find(s => s.id === currentSessionId);
-  if (active) {
-    if (active.active === false) return 0;
-    if (!active.loginTime || !active.loginTime.seconds) return 0;
-    return Math.round((Date.now() - active.loginTime.seconds * 1000) / 1000);
-  }
-  if (currentSessionStart > 0) {
-    return Math.round((Date.now() - currentSessionStart) / 1000);
-  }
-  return 0;
+  // Only return seconds where the tab was actually visible
+  return activeSessionSeconds;
 }
 
 // #11: calcYearTotalPayments now uses configurable taxStartDate
@@ -810,15 +1170,20 @@ function calcYearTotalPayments(subId, paymentsArr, taxStartDate) {
 }
 
 function sumWeeklyChecks(subId, weekStartDate) {
-  const weekStart = weekStartDate || getLastFriday();
+  const weekStart = weekStartDate || getCurrentWeekStart();
+  const weekEnd = getWeekEnd(weekStart);
+  const isCurrentWeek = weekEnd.getTime() > Date.now();
+  const upperBoundMs = isCurrentWeek ? Infinity : weekEnd.getTime();
   return accountChecks
-    .filter(c => c.subId === subId && c.createdAt && c.createdAt.seconds && c.createdAt.seconds * 1000 >= weekStart.getTime())
+    .filter(c => c.subId === subId && c.createdAt && c.createdAt.seconds &&
+            c.createdAt.seconds * 1000 >= weekStart.getTime() &&
+            c.createdAt.seconds * 1000 < upperBoundMs)
     .reduce((s, c) => s + (c.amount || 0), 0);
 }
 
 function startAccountChecksListener() {
   if (unsubscribeAccountChecks) unsubscribeAccountChecks();
-  const weekStart = getLastFriday();
+  const weekStart = getCurrentWeekStart();
   let query = db.collection('accountChecks');
   if (currentUser.role === 'sub') {
     query = query.where('subId', '==', currentUser.uid);
@@ -878,7 +1243,7 @@ async function subCheckAccount() {
     const costStr = rounded.toFixed(2).replace('.', ',');
 
     // Fetch current week data directly
-    const weekStart = getLastFriday();
+    const weekStart = getCurrentWeekStart();
     const [snapSessions, snapPayments, snapChecks] = await Promise.all([
       db.collection('sessions').where('subId', '==', currentUser.uid).get(),
       db.collection('payments').where('paidBy', '==', currentUser.username).get(),
@@ -896,7 +1261,12 @@ async function subCheckAccount() {
     const allPayments = [];
     snapPayments.forEach(d => allPayments.push({ id: d.id, ...d.data() }));
     const allChecks = [];
-    snapChecks.forEach(d => allChecks.push({ id: d.id, ...d.data() }));
+    snapChecks.forEach(d => {
+      const data = { id: d.id, ...d.data() };
+      // #9: If serverTimestamp is still pending, use current time for immediate calculation
+      if (!data.createdAt) data.createdAt = new Date();
+      allChecks.push(data);
+    });
 
     const sub = subs.find(s => s.id === currentUser.uid);
     if (!sub) { showAlert('FEHLER', 'Sub nicht gefunden.'); return; }
@@ -921,6 +1291,10 @@ async function subCheckAccount() {
     const msg = insults[insultIndex];
     showAlert('🐷 KONTOPRÜFUNG', msg);
 
+    // Update UI immediately
+    renderSubFagTaxView();
+    updateTotals();
+
     // #18: Store sessions for renderSubFagTaxCounters (replaces window.__ftSessions)
     lastCheckSessions = weekSessions;
     renderSubFagTaxCounters();
@@ -931,7 +1305,7 @@ async function subCheckAccount() {
 
 async function autoCreateFagTaxes() {
   if (!db || currentUser.role !== 'dom') return;
-  const weekStart = getLastFriday();
+  const weekStart = getCurrentWeekStart();
   const activeSubs = subs.filter(s => s.active !== false && s.fagTax && s.fagTax.enabled !== false);
   if (activeSubs.length === 0) return;
 
@@ -1000,6 +1374,103 @@ async function autoCreateFagTaxes() {
           createdAt: firebase.firestore.FieldValue.serverTimestamp()
         });
       } catch (e) { console.error('Auto FagTax error:', e); }
+    }
+  }
+}
+
+async function autoCloseCompletedWeeks() {
+  if (!db || currentUser.role !== 'dom') return;
+
+  const currentWeekStart = getCurrentWeekStart();
+  const activeSubs = subs.filter(s => s.active !== false && s.fagTax && s.fagTax.enabled !== false);
+
+  for (const sub of activeSubs) {
+    // Fetch ALL sessions for this sub (not filtered by week)
+    const allSessions = await fetchAllSubSessions(sub.id);
+
+    // Fetch ALL account checks for this sub
+    let allChecks = [];
+    try {
+      const snap = await db.collection('accountChecks').where('subId', '==', sub.id).get();
+      snap.forEach(d => allChecks.push({ id: d.id, ...d.data() }));
+    } catch (e) {}
+
+    // Group sessions by week
+    const weekGroups = groupSessionsByWeek(allSessions);
+
+    for (const [weekStartMs, weekSessions] of weekGroups) {
+      // Skip current week (handled by autoCreateFagTaxes)
+      if (weekStartMs >= currentWeekStart.getTime()) continue;
+
+      // Check if FagTax already exists for this week
+      const existingFT = fagTaxes.find(f =>
+        f.subId === sub.id &&
+        f.weekStart && f.weekStart.seconds &&
+        Math.abs(f.weekStart.seconds * 1000 - weekStartMs) < 86400000
+      );
+
+      // If already exists and paid, skip (final)
+      if (existingFT && existingFT.paid) continue;
+
+      const weekStart = new Date(weekStartMs);
+      const calc = calculateWeeklyFagTax(sub, weekStart, allSessions, payments, allChecks);
+
+      if (calc.baseAmount <= 0) continue;
+
+      // Check for carried interest from previous paid FagTax
+      const prevFTs = fagTaxes
+        .filter(f => f.subId === sub.id && f.weekStart && f.weekStart.seconds)
+        .sort((a, b) => b.weekStart.seconds - a.weekStart.seconds);
+      const prevFT = prevFTs.find(f => f.weekStart.seconds * 1000 < weekStartMs);
+      const carriedInterest = [];
+      if (prevFT && prevFT.paid && prevFT.interestAmount > 0) {
+        const prevKW = getKW(new Date(prevFT.weekStart.seconds * 1000));
+        carriedInterest.push({ sourceKW: String(prevKW), amount: prevFT.interestAmount });
+      }
+      const carriedSum = carriedInterest.reduce((s, c) => s + c.amount, 0);
+      const totalAmount = round2(calc.baseAmount + carriedSum);
+
+      if (existingFT) {
+        // Update existing unpaid FagTax with final values
+        try {
+          await db.collection('fagTaxes').doc(existingFT.id).update({
+            loginsCount: calc.logins,
+            minutesCount: Math.ceil(calc.totalSeconds / 60),
+            secondsCount: calc.totalSeconds,
+            loginCost: calc.loginCost,
+            minuteCost: calc.timeCost,
+            yearTotal: calc.yearTotal,
+            taxAmount: calc.taxAmount,
+            checkCost: calc.checkCost,
+            baseAmount: calc.baseAmount,
+            carriedInterest: carriedInterest.length > 0 ? carriedInterest : [],
+            totalAmount
+          });
+        } catch (e) { console.error('autoClose update error:', e); }
+      } else {
+        // Create new FagTax for closed past week
+        if (totalAmount <= 0) continue;
+        try {
+          await db.collection('fagTaxes').add({
+            subId: sub.id, username: sub.username,
+            displayName: sub.displayName || sub.username,
+            weekStart: weekStart,
+            loginsCount: calc.logins,
+            minutesCount: Math.ceil(calc.totalSeconds / 60),
+            secondsCount: calc.totalSeconds,
+            loginCost: calc.loginCost,
+            minuteCost: calc.timeCost,
+            yearTotal: calc.yearTotal,
+            taxAmount: calc.taxAmount,
+            checkCost: calc.checkCost,
+            baseAmount: calc.baseAmount,
+            carriedInterest: carriedInterest.length > 0 ? carriedInterest : [],
+            totalAmount,
+            lateInterest: false, paid: false, paidAt: null,
+            createdAt: firebase.firestore.FieldValue.serverTimestamp()
+          });
+        } catch (e) { console.error('autoClose create error:', e); }
+      }
     }
   }
 }
@@ -1198,11 +1669,11 @@ function generateFagTaxInvoice(sub, logins, seconds, loginCost, minuteCost, taxA
   const perSec = (cfg.perMinute || 1) / 60;
   const insult = FAGTAX_INSULTS[Math.floor(Math.random() * FAGTAX_INSULTS.length)];
   const now = new Date();
-  const dateStr = now.toLocaleDateString('de-DE');
   const ftWeekStart = existingFT && existingFT.weekStart
     ? (existingFT.weekStart.seconds ? new Date(existingFT.weekStart.seconds * 1000) : new Date(existingFT.weekStart))
-    : getLastFriday();
-  const weekStr = ftWeekStart.toLocaleDateString('de-DE');
+    : getCurrentWeekStart();
+  const invoiceKW = getKW(ftWeekStart);
+  const invoiceWeekRange = formatWeekRange(ftWeekStart);
   const subName = sub.displayName || sub.username;
   const ftId = existingFT ? existingFT.id.slice(0, 8).toUpperCase() : 'ENTWURF';
   const grandTotal = totalAmount + (interestAmount || 0);
@@ -1282,7 +1753,7 @@ function generateFagTaxInvoice(sub, logins, seconds, loginCost, minuteCost, taxA
   <div class="divider">✕ ✕ ✕ ✕ ✕</div>
 
   <p style="font-size:9pt;color:#666;margin-bottom:12px;letter-spacing:2px">
-    ABRECHNUNGSZEITRAUM: ${weekStr} – ${dateStr}
+    ABRECHNUNGSZEITRAUM: KW ${invoiceKW} &mdash; ${invoiceWeekRange}
   </p>
 
   <table>
@@ -1375,10 +1846,38 @@ function generateFagTaxInvoice(sub, logins, seconds, loginCost, minuteCost, taxA
   </div>
 </body></html>`;
 
-  const w = window.open('', '_blank');
-  if (!w) { showAlert('PDF EXPORT', 'Popup-Blocker verhindert PDF-Export. Bitte Popups erlauben.'); return; }
-  w.document.write(html);
-  w.document.close();
+  // Mobile: use html2pdf.js for clean PDF without browser headers/footers
+  const isMobile = window.innerWidth <= 768 || /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+
+  if (isMobile && typeof html2pdf !== 'undefined') {
+    const container = document.createElement('div');
+    container.innerHTML = html;
+    container.style.position = 'absolute';
+    container.style.left = '-9999px';
+    document.body.appendChild(container);
+
+    html2pdf().from(container).set({
+      margin: [10, 12, 10, 12],
+      filename: `FAG-TAX_KW${invoiceKW}_${subName.replace(/\s+/g, '_')}.pdf`,
+      html2canvas: { scale: 2, useCORS: true },
+      jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+    }).save().then(() => {
+      document.body.removeChild(container);
+      showToast('PDF heruntergeladen 📄', 'success');
+    }).catch(err => {
+      document.body.removeChild(container);
+      console.error('PDF generation failed:', err);
+      // Fallback to window.open
+      const w = window.open('', '_blank');
+      if (w) { w.document.write(html); w.document.close(); }
+    });
+  } else {
+    // Desktop: open in new tab for print
+    const w = window.open('', '_blank');
+    if (!w) { showAlert('PDF EXPORT', 'Popup-Blocker verhindert PDF-Export. Bitte Popups erlauben.'); return; }
+    w.document.write(html);
+    w.document.close();
+  }
 }
 
 function numberToGerman(n) {
@@ -1475,15 +1974,21 @@ function renderDashboard() {
     dashTitle.textContent = '👑 DEIN EINKOMMEN, HERR';
     dashSubtitle.textContent = 'Deine Säue. Ihr Geld. Dein Besitz.';
     domPanel.style.display = 'block';
+    domPanel.classList.remove('hidden');
     actionTh.style.display = 'table-cell';
+    actionTh.classList.remove('hidden');
     thSub.style.display = 'table-cell';
+    thSub.classList.remove('hidden');
   } else {
     const name = currentUser.displayName || currentUser.username;
     dashTitle.textContent = `🐷 DEINE DIENSTE, ${name.toUpperCase()}`;
     dashSubtitle.textContent = 'Kriech her und sieh, was du deinem Herrn gegeben hast. Loser.';
     domPanel.style.display = 'none';
+    domPanel.classList.add('hidden');
     actionTh.style.display = 'none';
+    actionTh.classList.add('hidden');
     thSub.style.display = 'none';
+    thSub.classList.add('hidden');
   }
   userBadge.textContent = currentUser.icon + ' ' + (currentUser.displayName || currentUser.label);
 }
@@ -1517,12 +2022,12 @@ function renderPayments() {
       subName = s ? (s.displayName || s.username) : (p.paidBy || '?');
     }
     return `<tr>
-      <td class="date">${dateStr}</td>
-      <td class="amount">${amountStr}</td>
-      <td><span class="category-badge" style="border-color:${cat.color};color:${cat.color}">${cat.icon} ${cat.label}</span></td>
-      ${isDom ? `<td class="sub-cell">🐷 ${escapeHtml(subName)}</td>` : ''}
-      <td class="desc" title="${escapeHtml(p.description)}">${escapeHtml(p.description)}</td>
-      ${isDom ? `<td><button class="btn btn--sm btn--danger" data-id="${p.id}" title="Löschen">✕</button></td>` : ''}
+      <td class="date" data-label="DATUM">${dateStr}</td>
+      <td class="amount" data-label="BETRAG">${amountStr}</td>
+      <td data-label="KATEGORIE"><span class="category-badge" style="border-color:${cat.color};color:${cat.color}">${cat.icon} ${cat.label}</span></td>
+      ${isDom ? `<td class="sub-cell" data-label="ZAHLER">🐷 ${escapeHtml(subName)}</td>` : ''}
+      <td class="desc" data-label="BESCHREIBUNG" title="${escapeHtml(p.description)}">${escapeHtml(p.description)}</td>
+      ${isDom ? `<td data-label=""><button class="btn btn--sm btn--danger" data-id="${p.id}" title="Löschen">✕</button></td>` : ''}
     </tr>`;
   }).join('');
   qsa('#payments-tbody [title="Löschen"]').forEach(btn => {
@@ -1680,13 +2185,17 @@ function showSubFagTaxDetails(subId, ftWeekStart, ftId) {
   if (!sub) return;
   const cfg = getSubFagConfig(sub);
   const name = sub.username || sub.name || 'Unbekannt';
-  const weekStart = ftWeekStart ? new Date(ftWeekStart) : getLastFriday();
+  const weekStart = ftWeekStart ? new Date(ftWeekStart) : getCurrentWeekStart();
   const ft = ftId ? fagTaxes.find(f => f.id === ftId) : null;
 
-  // #9: Use stored FagTax values when available, otherwise use central function
   let logins, storedSecs, loginCost, timeCost, taxAmount, checkSum, totalWeek, yearTotal, perLogin, perSec, taxRate;
-  if (ft) {
-    // Use stored values from the FagTax document
+
+  // Determine if this is the current week
+  const currentWeekStart = getCurrentWeekStart();
+  const isCurrentWeek = Math.abs(weekStart.getTime() - currentWeekStart.getTime()) < 86400000;
+
+  if (ft && ft.paid) {
+    // PAID: use stored values (final, immutable)
     logins = ft.loginsCount || 0;
     storedSecs = ft.secondsCount || 0;
     loginCost = ft.loginCost || 0;
@@ -1699,8 +2208,8 @@ function showSubFagTaxDetails(subId, ftWeekStart, ftId) {
     perLogin = cfg.perLogin || 1;
     perSec = (cfg.perMinute || 1) / 60;
     taxRate = cfg.taxRate || 0.03;
-  } else {
-    // No stored FagTax — calculate live
+  } else if (isCurrentWeek || !ft) {
+    // CURRENT WEEK or NO FAGTAX: always calculate live
     const calc = calculateWeeklyFagTax(sub, weekStart, sessions, payments, accountChecks);
     logins = calc.logins;
     storedSecs = calc.totalSeconds;
@@ -1713,14 +2222,29 @@ function showSubFagTaxDetails(subId, ftWeekStart, ftId) {
     perLogin = calc.perLogin;
     perSec = calc.perSec;
     taxRate = calc.taxRate;
+  } else {
+    // PAST WEEK, UNPAID but stored: use stored values (week is closed)
+    logins = ft.loginsCount || 0;
+    storedSecs = ft.secondsCount || 0;
+    loginCost = ft.loginCost || 0;
+    timeCost = ft.minuteCost || 0;
+    taxAmount = ft.taxAmount || 0;
+    yearTotal = ft.yearTotal || 0;
+    const ftWS = ft.weekStart?.seconds ? new Date(ft.weekStart.seconds * 1000) : weekStart;
+    checkSum = ft.checkCost !== undefined ? ft.checkCost : sumWeeklyChecks(sub.id, ftWS);
+    totalWeek = round2(loginCost + timeCost + taxAmount + checkSum);
+    perLogin = cfg.perLogin || 1;
+    perSec = (cfg.perMinute || 1) / 60;
+    taxRate = cfg.taxRate || 0.03;
   }
 
   const fmt = v => v.toFixed(2).replace('.', ',') + '€';
   const durationStr = formatDuration(storedSecs);
 
   const kw = getKW(weekStart);
-  const weekLabel = ftWeekStart ? `KW ${kw}` : `KW ${kw} (aktuell)`;
-  showModal('🐷 ' + escapeHtml(name) + ' – ' + weekLabel, `
+  const weekRangeStr = formatWeekRange(weekStart);
+  const weekLabel = isCurrentWeek ? `KW ${kw} ${weekRangeStr} (aktuell)` : `KW ${kw} ${weekRangeStr}`;
+  showModal('🐷 ' + escapeHtml(name) + ' – KW ' + kw, `
     <div class="modal-fagtax-details" style="max-width:420px">
       <div style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:1rem">${weekLabel}</div>
       <div class="fagtax-details-grid">
@@ -1761,16 +2285,13 @@ function showSubFagTaxDetails(subId, ftWeekStart, ftId) {
 
 function renderFagTaxOverview() {
   if (!fagTaxOverview) return;
-  const weekStart = getLastFriday();
+  const weekStart = getCurrentWeekStart();
   const weekStartMs = weekStart.getTime();
 
   // === CURRENT WEEK: Always LIVE calculated ===
   const activeSubs = subs.filter(s => s.active !== false && s.fagTax && s.fagTax.enabled !== false);
   let html = '<div class="fagtax-weekly-overview">';
   html += '<h4>📊 FAG-TAX ÜBERSICHT (ALLE WOCHEN)</h4>';
-
-  // Wochenabschluss button
-  html += `<div style="margin:10px 0;text-align:center"><button id="btn-week-close" class="btn btn--primary" style="font-size:0.8rem">📅 AKTUELLE WOCHE SPEICHERN</button></div>`;
 
   // Export unpaid button
   const unpaid = fagTaxes.filter(f => !f.paid);
@@ -1781,14 +2302,12 @@ function renderFagTaxOverview() {
   // --- LIVE Current Week ---
   if (activeSubs.length > 0) {
     const kw = getKW(weekStart);
-    const wsStr = weekStart.toLocaleDateString('de-DE');
-    const weDate = new Date(weekStart); weDate.setDate(weDate.getDate() + 6);
-    const weStr = weDate.toLocaleDateString('de-DE');
+    const weekRangeStr = formatWeekRange(weekStart);
 
-    html += `<div class="ft-week-group" style="margin-bottom:20px;padding:12px;background:var(--bg-hover);border-radius:8px;border:2px solid var(--red)">`;
-    html += `<h5 style="margin:0 0 10px 0;font-size:0.9rem;letter-spacing:2px">🔴 KW ${kw} <span style="font-weight:400;color:var(--text-secondary)">(${wsStr} – ${weStr})</span> <span style="color:var(--red);font-size:0.7rem;font-weight:900">LIVE</span></h5>`;
+    html += `<div class="ft-week-group ft-week-group--live">`;
+    html += `<h5 class="ft-week-header">🔴 KW ${kw} <span class="ft-week-date-range">${weekRangeStr}</span> <span class="ft-live-badge">LIVE</span></h5>`;
 
-    html += `<table class="fagtax-table" style="font-size:0.75rem"><thead><tr>
+    html += `<table class="fagtax-table"><thead><tr>
       <th>SAU</th><th>LOGINS</th><th>ZEIT</th><th>€ BASIS</th><th>€ ZINSEN</th><th>GESAMT</th><th>STATUS</th><th>AKTIONEN</th>
     </tr></thead><tbody>`;
 
@@ -1859,14 +2378,14 @@ function renderFagTaxOverview() {
       const totalStr = (isPaid ? (existingFT.totalWithInterest || totalAmount) : totalAmount).toFixed(2).replace('.', ',') + '€';
 
       html += `<tr>
-        <td><span class="ft-sub-link" data-subid="${sub.id}" data-ftid="${ftId || ''}" data-weekstart="${weekStartMs}" style="cursor:pointer;border-bottom:1px dashed var(--text-dim)">🐷 ${escapeHtml(name)}</span></td>
-        <td style="font-weight:700">${calc.logins}</td>
-        <td style="font-size:0.7rem">${timeStr}</td>
-        <td>${baseStr}</td>
-        <td style="font-size:0.7rem">${intColHTML}</td>
-        <td style="color:var(--red);font-weight:900">${totalStr}</td>
-        <td>${statusStr}</td>
-        <td style="white-space:nowrap">${actionsStr}</td>
+        <td data-label="SAU"><span class="ft-sub-link" data-subid="${sub.id}" data-ftid="${ftId || ''}" data-weekstart="${weekStartMs}" style="cursor:pointer;border-bottom:1px dashed var(--text-dim)">🐷 ${escapeHtml(name)}</span></td>
+        <td data-label="LOGINS" style="font-weight:700">${calc.logins}</td>
+        <td data-label="ZEIT" style="font-size:0.7rem">${timeStr}</td>
+        <td data-label="€ BASIS">${baseStr}</td>
+        <td data-label="€ ZINSEN" style="font-size:0.7rem">${intColHTML}</td>
+        <td data-label="GESAMT" style="color:var(--red);font-weight:900">${totalStr}</td>
+        <td data-label="STATUS">${statusStr}</td>
+        <td data-label="AKTIONEN" style="white-space:nowrap">${actionsStr}</td>
       </tr>`;
     });
 
@@ -1889,18 +2408,24 @@ function renderFagTaxOverview() {
     });
     const weeks = Object.keys(weekMap).map(Number).sort((a, b) => b - a);
 
+    html += `<div class="past-weeks-section" style="margin-top:24px">
+      <h4 style="margin-bottom:12px;font-size:0.85rem;color:var(--text-dim);letter-spacing:2px">VERGANGENE WOCHEN</h4>`;
+
     weeks.forEach(wsKey => {
       const weekFTs = weekMap[wsKey];
       const wsDate = new Date(wsKey);
       const kw = getKW(wsDate);
-      const wsStr = wsDate.toLocaleDateString('de-DE');
-      wsDate.setDate(wsDate.getDate() + 6);
-      const weStr = wsDate.toLocaleDateString('de-DE');
+      const weekRangeStr = formatWeekRange(wsDate);
 
-      html += `<div class="ft-week-group" style="margin-bottom:20px;padding:12px;background:var(--bg-hover);border-radius:8px;border:1px solid var(--border)">`;
-      html += `<h5 style="margin:0 0 10px 0;font-size:0.9rem;letter-spacing:2px">📅 KW ${kw} <span style="font-weight:400;color:var(--text-secondary)">(${wsStr} – ${weStr})</span></h5>`;
+      html += `
+      <details class="ft-week-accordion">
+        <summary class="ft-week-summary">
+          <span>📅 KW ${kw}</span>
+          <span class="ft-week-date-range">${weekRangeStr}</span>
+        </summary>
+        <div class="ft-week-group-content">`;
 
-      html += `<table class="fagtax-table" style="font-size:0.75rem"><thead><tr>
+      html += `<table class="fagtax-table"><thead><tr>
         <th>SAU</th><th>€ BASIS</th><th>€ ZINSEN</th><th>GESAMT</th><th>STATUS</th><th>AKTIONEN</th>
       </tr></thead><tbody>`;
 
@@ -1965,17 +2490,19 @@ function renderFagTaxOverview() {
         const totalStr = (isPaid ? totalPaid : (baseAmount + carriedSum)).toFixed(2).replace('.', ',') + '€';
 
         html += `<tr>
-          <td><span class="ft-sub-link" data-subid="${ft.subId}" data-ftid="${ft.id}" data-weekstart="${ft.weekStart?.seconds ? ft.weekStart.seconds * 1000 : ''}" style="cursor:pointer;border-bottom:1px dashed var(--text-dim)">🐷 ${escapeHtml(name)}</span></td>
-          <td>${baseStr}</td>
-          <td style="font-size:0.7rem">${intColHTML}</td>
-          <td style="color:var(--red);font-weight:900">${totalStr}</td>
-          <td>${statusStr}</td>
-          <td style="white-space:nowrap">${actionsStr}</td>
+          <td data-label="SAU"><span class="ft-sub-link" data-subid="${ft.subId}" data-ftid="${ft.id}" data-weekstart="${ft.weekStart?.seconds ? ft.weekStart.seconds * 1000 : ''}" style="cursor:pointer;border-bottom:1px dashed var(--text-dim)">🐷 ${escapeHtml(name)}</span></td>
+          <td data-label="€ BASIS">${baseStr}</td>
+          <td data-label="€ ZINSEN" style="font-size:0.7rem">${intColHTML}</td>
+          <td data-label="GESAMT" style="color:var(--red);font-weight:900">${totalStr}</td>
+          <td data-label="STATUS">${statusStr}</td>
+          <td data-label="AKTIONEN" style="white-space:nowrap">${actionsStr}</td>
         </tr>`;
       });
 
-      html += '</tbody></table></div>';
+      html += '</tbody></table></div></div></details>';
     });
+
+    html += `</div>`; // Close past-weeks-section
   }
 
   // Show message if no data at all
@@ -1988,7 +2515,7 @@ function renderFagTaxOverview() {
 
   // #6: Event delegation — single handler on container instead of per-element listeners
   fagTaxOverview.onclick = (e) => {
-    const target = e.target.closest('[data-ftid], .ft-sub-link, #btn-week-close, #btn-export-unpaid');
+    const target = e.target.closest('[data-ftid], .ft-sub-link, #btn-export-unpaid');
     if (!target) return;
 
     // Sub name link → show details
@@ -2010,18 +2537,6 @@ function renderFagTaxOverview() {
     if (target.classList.contains('btn--cyan') && target.dataset.ftid) {
       const ft = fagTaxes.find(f => f.id === target.dataset.ftid);
       if (ft) exportSingleFagTaxInvoice(ft);
-      return;
-    }
-
-    // "WOCHE BERECHNEN" button
-    if (target.id === 'btn-week-close') {
-      target.disabled = true;
-      target.textContent = '⏳ SPEICHERE...';
-      autoCreateFagTaxes().then(() => {
-        target.textContent = '📅 AKTUELLE WOCHE SPEICHERN';
-        target.disabled = false;
-        showToast('Fag-Tax für aktuelle Woche gespeichert', 'success');
-      });
       return;
     }
 
@@ -2061,7 +2576,7 @@ async function exportSingleFagTaxInvoice(ft) {
   }
 
   // For UNPAID FagTaxes, live-calculate from current data
-  const ftWS = ft.weekStart?.seconds ? new Date(ft.weekStart.seconds * 1000) : getLastFriday();
+  const ftWS = ft.weekStart?.seconds ? new Date(ft.weekStart.seconds * 1000) : getCurrentWeekStart();
 
   // Fetch fresh sessions for this sub
   let subSessions = [];
@@ -2146,7 +2661,7 @@ function renderSubFagTaxCounters() {
   const cfg = getSubFagConfig(sub);
 
   // #18: Use lastCheckSessions instead of window.__ftSessions
-  const weekStart = getLastFriday();
+  const weekStart = getCurrentWeekStart();
   const subSessions = [];
   if (lastCheckSessions) {
     lastCheckSessions.forEach(s => {
@@ -2207,7 +2722,7 @@ function renderSubFagTaxCounters() {
           <div class="ft-counter-value" style="font-size:1rem;color:var(--orange)">${calc.checkCost.toFixed(2).replace('.', ',')}€</div>
           <div class="ft-counter-cost">BISHER GEZAHLT</div>
         </div>
-        <div class="ft-counter-item" style="border-color:var(--red-dark);grid-column:1 / -1;max-width:300px;margin:0 auto">
+        <div class="ft-counter-item" style="border:2px solid var(--red-dark);grid-column:span 1">
           <div class="ft-counter-label">LAUFENDE KOSTEN</div>
           <div class="ft-counter-value" id="ft-live-total" style="color:var(--red);font-size:1.6rem">${totalWithInterest.toFixed(2).replace('.', ',')}€</div>
           <div class="ft-counter-cost">SEIT LETZTEM FREITAG${carriedSum > 0 ? ` (+${carriedSum.toFixed(2).replace('.', ',')}€ Zinsen aus VORWOCHEN)` : ''}</div>
@@ -2259,7 +2774,7 @@ function renderSubFagTaxHistory() {
 
   // Only show unpaid Fag-Taxes from PREVIOUS weeks (where late interest applies)
   // Current week's FagTax is hidden — only visible after KONTO PRÜFEN
-  const weekStart = getLastFriday();
+  const weekStart = getCurrentWeekStart();
   const overdueUnpaid = fagTaxes.filter(f =>
     !f.paid &&
     f.subId === currentUser.uid &&

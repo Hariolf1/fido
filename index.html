@@ -3,6 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#cc0000">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="FinDom">
+  <link rel="manifest" href="/manifest.json">
+  <link rel="apple-touch-icon" href="/icon-192.png">
   <title>FinDom Tracker</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -12,7 +18,7 @@
 <body>
 
   <!-- ===== LOGIN VIEW ===== -->
-  <div id="view-login">
+  <div id="view-login" class="hidden">
     <div class="login-backdrop"></div>
     <div class="login-container">
       <div class="login-header">
@@ -37,10 +43,25 @@
       </div>
       <p class="login-footer">— Nur für Augenhöhe: 0cm —</p>
     </div>
+
+  </div>
+
+  <div id="pwa-hint" class="pwa-hint hidden">
+    <div class="pwa-hint-content">
+      <span class="pwa-icon">📱</span>
+        <div class="pwa-text">
+          <strong>Als App installieren</strong>
+          <p>Tippe auf <span class="pwa-share-icon"></span> und "Zum Home-Bildschirm hinzufügen" für das volle Erlebnis.</p>
+        </div>
+        <div class="pwa-actions">
+          <button id="pwa-install-btn" class="btn btn--primary" style="display:none">JETZT INSTALLIEREN</button>
+          <button id="pwa-close" class="pwa-close">SPÄTER</button>
+        </div>
+    </div>
   </div>
 
   <!-- ===== DASHBOARD VIEW ===== -->
-  <div id="view-dashboard">
+  <div id="view-dashboard" class="hidden">
     <div id="setup-message" class="setup-container" style="display:none">
       <div class="setup-box">
         <h1>KONFIGURATION ERFORDERLICH</h1>
@@ -73,7 +94,7 @@
       </header>
 
       <!-- DOM PANEL -->
-      <div id="dom-panel" style="display:none">
+      <div id="dom-panel" class="hidden">
         <section class="card">
           <div class="card-header">
             <h3 class="card-title">NEUE ZAHLUNG</h3>
@@ -92,6 +113,7 @@
                   <option value="strafe">STRAFE</option>
                   <option value="training">TRAINING</option>
                   <option value="fag-tax">FAG-TAX</option>
+                  <option value="dreck">DRECKSKAUF</option>
                 </select>
               </div>
             </div>
@@ -216,6 +238,12 @@
   <!-- ===== TOAST CONTAINER ===== -->
   <div id="toast-container" class="toast-container"></div>
 
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    }
+  </script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
   <script src="app.js?v=9"></script>
