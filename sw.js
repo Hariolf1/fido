@@ -1,10 +1,12 @@
-const CACHE_NAME = 'findom-v2';
+const CACHE_NAME = 'findom-v3';
 const STATIC_ASSETS = [
   './',
   'index.html',
   'styles.css',
   'app.js',
-  'manifest.json'
+  'manifest.json',
+  'icon-192.png',
+  'icon-512.png'
 ];
 
 self.addEventListener('install', event => {
@@ -25,16 +27,21 @@ self.addEventListener('activate', event => {
 
 // Network-first: always try network, fall back to cache for static assets
 self.addEventListener('fetch', event => {
-  // Skip non-GET and Firebase/external API requests
   if (event.request.method !== 'GET') return;
   const url = new URL(event.request.url);
   if (url.origin !== location.origin) return;
+
+  // Simplified matching: check if the file name is in STATIC_ASSETS
+  const isStatic = STATIC_ASSETS.some(asset => {
+    if (asset === './') return url.pathname.endsWith('/');
+    return url.pathname.endsWith(asset);
+  });
 
   event.respondWith(
     fetch(event.request)
       .then(response => {
         // Cache successful responses for static assets
-        if (response.ok && STATIC_ASSETS.some(a => url.pathname === a || url.pathname.endsWith(a.slice(1)))) {
+        if (response.ok && isStatic) {
           const clone = response.clone();
           caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
         }
