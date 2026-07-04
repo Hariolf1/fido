@@ -77,7 +77,7 @@ const DEGRADING = {
       'Dein Bankkonto weint. Dein Herr lacht. So sieht die natürliche Ordnung aus, Geldschwein. Weiter pumpen.'
     ]},
     { min: 5000,  max: Infinity, msg: [
-      'DEINE SCHULD IST DEINE IDENTITÄT. DU EXISTIERT NUR NOCH, UM MICH ZU BEREICHERN. DEIN GANZES LEBEN IST MEIN EIGENTUM.',
+      'DEINE SCHULD IS DEINE IDENTITÄT. DU EXISTIERT NUR NOCH, UM MICH ZU BEREICHERN. DEIN GANZES LEBEN IST MEIN EIGENTUM.',
       'DU BIST RESTLOS AUSGEWRUNGEN. JEDER ATEMZUG, DEN DU MACHST, GEHÖRT MIR. DEIN KONTO IST LEER – DEIN ZWECK IST ERFÜLLT.'
     ]}
   ],
@@ -150,8 +150,8 @@ let unsubscribeAccountChecks = null;
 let lastCheckSessions = null; // Sessions data from last account check (replaces window.__ftSessions)
 
 // Session visibility tracking (Subs only)
-const INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000;  // 5 min hidden → auto-logout
-const INACTIVITY_WARNING_MS = 4 * 60 * 1000;  // 4 min hidden → warning
+const INACTIVITY_TIMEOUT_MS = 30 * 1000;    // 30s hidden → auto-logout
+const INACTIVITY_WARNING_MS = 25 * 1000;    // 25s hidden → warning
 let tabHiddenAt = null;           // Timestamp when tab became hidden
 let activeSessionSeconds = 0;     // Only counts visible seconds
 let activeTimeInterval = null;    // 1s tick for active time counting
@@ -170,7 +170,11 @@ function round2(n) {
 function calculateWeeklyFagTax(sub, weekStart, sessionsArr, paymentsArr, checksArr, opts) {
   opts = opts || {};
   const cfg = getSubFagConfig(sub);
-  const wStart = weekStart instanceof Date ? weekStart : (weekStart && weekStart.seconds ? new Date(weekStart.seconds * 1000) : getCurrentWeekStart());
+  
+  // Safe Date conversion for weekStart
+  const wStart = weekStart instanceof Date ? weekStart 
+               : (weekStart && weekStart.seconds ? new Date(weekStart.seconds * 1000) 
+               : (typeof weekStart === 'number' ? new Date(weekStart) : getCurrentWeekStart()));
 
   // Upper bound: end of this week (next Friday 00:00)
   const wEnd = getWeekEnd(wStart);
@@ -207,16 +211,20 @@ function calculateWeeklyFagTax(sub, weekStart, sessionsArr, paymentsArr, checksA
   const perLogin = cfg.perLogin || 1;
   const perSec = (cfg.perMinute || 1) / 60;
   const taxRate = cfg.taxRate || 0.03;
-  const taxStart = cfg.taxStartDate || FAG_CONFIG_DEFAULTS.taxStartDate;
-
+  let taxStart = cfg.taxStartDate || FAG_CONFIG_DEFAULTS.taxStartDate;
+  
+  // Safe conversion for taxStart (handles Firestore Timestamp)
+  if (taxStart && typeof taxStart.toDate === 'function') taxStart = taxStart.toDate();
+  const taxStartFinal = taxStart instanceof Date ? taxStart : new Date(taxStart);
+  const startMs = isNaN(taxStartFinal.getTime()) ? new Date('2026-07-01').getTime() : taxStartFinal.getTime();
   const loginCost = round2(logins * perLogin);
   const timeCost = round2(totalSeconds * perSec);
 
   // Year total (uses configurable start date)
-  const startMs = (taxStart instanceof Date ? taxStart : new Date(taxStart)).getTime();
   const yearTotal = paymentsArr.filter(p => {
     const match = p.subId === sub.id;
-    const ts = p.createdAt ? p.createdAt.seconds * 1000 : 0;
+    // Handle pending serverTimestamp (null createdAt)
+    const ts = p.createdAt ? (p.createdAt.seconds ? p.createdAt.seconds * 1000 : (p.createdAt instanceof Date ? p.createdAt.getTime() : Date.now())) : Date.now();
     return match && ts >= startMs;
   }).reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
 
@@ -654,9 +662,16 @@ async function closeStaleSessions() {
     const cutoff = Date.now() - 5 * 60 * 1000;
     snap.forEach(doc => {
       const data = doc.data();
-      const hb = data.lastHeartbeat ? data.lastHeartbeat.seconds * 1000 : 0;
-      if (hb < cutoff) {
-        const loginMs = data.loginTime ? data.loginTime.seconds * 1000 : hb;
+      let loginMs = data.loginTime ? (data.loginTime.seconds ? data.loginTime.seconds * 1000 : data.loginTime) : 0;
+      if (loginMs instanceof Date) loginMs = loginMs.getTime();
+      
+      const hb = data.lastHeartbeat ? (data.lastHeartbeat.seconds ? data.lastHeartbeat.seconds * 1000 : data.lastHeartbeat) : 0;
+      const hbMs = hb instanceof Date ? hb.getTime() : hb;
+
+      if (hbMs < cutoff) {
+        // Fallback for missing loginTime to prevent huge durations
+        if (!loginMs || isNaN(loginMs)) loginMs = hbMs || cutoff; 
+        
         const mins = Math.round((cutoff - loginMs) / 60000);
         const secs = Math.round((cutoff - loginMs) / 1000);
         db.collection('sessions').doc(doc.id).update({
@@ -1161,11 +1176,14 @@ function getLiveSessionSeconds() {
 
 // #11: calcYearTotalPayments now uses configurable taxStartDate
 function calcYearTotalPayments(subId, paymentsArr, taxStartDate) {
-  const start = (taxStartDate || FAG_CONFIG_DEFAULTS.taxStartDate).getTime();
+  let start = taxStartDate || FAG_CONFIG_DEFAULTS.taxStartDate;
+  if (start && typeof start.toDate === 'function') start = start.toDate();
+  const startMs = (start instanceof Date ? start : new Date(start)).getTime();
+  
   return paymentsArr.filter(p => {
     const match = p.subId === subId;
-    const ts = p.createdAt ? p.createdAt.seconds * 1000 : 0;
-    return match && ts >= start;
+    const ts = p.createdAt ? (p.createdAt.seconds ? p.createdAt.seconds * 1000 : (p.createdAt instanceof Date ? p.createdAt.getTime() : Date.now())) : Date.now();
+    return match && ts >= startMs;
   }).reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
 }
 
