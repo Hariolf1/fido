@@ -16,7 +16,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700;800&family=Space+Grotesk:wght@500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="./styles.css?v=20">
+  <link rel="stylesheet" href="./styles.css?v=21">
 </head>
 <body>
 
@@ -60,6 +60,21 @@
           <button id="pwa-install-btn" class="btn btn--primary" style="display:none">JETZT INSTALLIEREN</button>
           <button id="pwa-close" class="pwa-close">SPÄTER</button>
         </div>
+    </div>
+  </div>
+
+  <!-- ===== PWA UPDATE BANNER ===== -->
+  <div id="pwa-update-hint" class="pwa-hint hidden" style="border-color: var(--cyan); box-shadow: 0 10px 40px rgba(0, 229, 255, 0.3), 0 0 20px var(--cyan-glow);">
+    <div class="pwa-hint-content">
+      <span class="pwa-icon">⚡</span>
+      <div class="pwa-text">
+        <strong style="color: var(--cyan);">NEUES UPDATE VERFÜGBAR!</strong>
+        <p>Eine neue Version der App ist bereit. Tippe auf "Aktualisieren", um die neueste Version sofort zu laden.</p>
+      </div>
+      <div class="pwa-actions">
+        <button id="pwa-update-btn" class="btn btn--cyan btn--full" style="font-weight:900;letter-spacing:1px;padding:12px;">🔄 JETZT AKTUALISIEREN</button>
+        <button id="pwa-update-close" class="pwa-close">SPÄTER</button>
+      </div>
     </div>
   </div>
 
@@ -346,9 +361,69 @@
 
   <script>
     if ('serviceWorker' in navigator) {
+      let refreshing = false;
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (!refreshing) {
+          refreshing = true;
+          window.location.reload();
+        }
+      });
+
       window.addEventListener('load', () => {
         navigator.serviceWorker.register('sw.js').then(reg => {
           console.log('SW registered');
+
+          const updateBanner = document.getElementById('pwa-update-hint');
+          const updateBtn = document.getElementById('pwa-update-btn');
+          const updateClose = document.getElementById('pwa-update-close');
+
+          function promptUpdate(worker) {
+            if (!updateBanner) return;
+            updateBanner.classList.remove('hidden');
+
+            if (updateBtn) {
+              updateBtn.onclick = () => {
+                updateBtn.disabled = true;
+                updateBtn.innerHTML = '⚡ WIRD AKTUALISIERT...';
+                if (worker) {
+                  worker.postMessage({ type: 'SKIP_WAITING' });
+                }
+                setTimeout(() => {
+                  window.location.reload();
+                }, 600);
+              };
+            }
+
+            if (updateClose) {
+              updateClose.onclick = () => {
+                updateBanner.classList.add('hidden');
+              };
+            }
+          }
+
+          // If a worker is already waiting
+          if (reg.waiting) {
+            promptUpdate(reg.waiting);
+          }
+
+          // Listen for new installing workers
+          reg.addEventListener('updatefound', () => {
+            const newWorker = reg.installing;
+            if (newWorker) {
+              newWorker.addEventListener('statechange', () => {
+                if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                  promptUpdate(newWorker);
+                }
+              });
+            }
+          });
+
+          // Check for updates when switching back to app
+          document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') {
+              reg.update();
+            }
+          });
         }).catch(err => {
           console.error('SW failed', err);
         });
@@ -358,6 +433,6 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
-  <script src="fido-app.js?v=20"></script>
+  <script src="fido-app.js?v=21"></script>
 </body>
 </html>

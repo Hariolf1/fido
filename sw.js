@@ -1,4 +1,4 @@
-const CACHE_NAME = 'findom-v20';
+const CACHE_NAME = 'findom-v21';
 const STATIC_ASSETS = [
   'index.html',
   '404.html',
@@ -13,7 +13,12 @@ self.addEventListener('install', event => {
   event.waitUntil(
     caches.open(CACHE_NAME).then(cache => cache.addAll(STATIC_ASSETS))
   );
-  self.skipWaiting();
+});
+
+self.addEventListener('message', event => {
+  if (event.data && (event.data.type === 'SKIP_WAITING' || event.data === 'skipWaiting')) {
+    self.skipWaiting();
+  }
 });
 
 self.addEventListener('activate', event => {
