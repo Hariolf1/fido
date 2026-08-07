@@ -3924,7 +3924,7 @@ function renderDomFagTaxInvoices() {
 
   qsa('.btn-mark-ft-paid').forEach(btn => {
     btn.onclick = () => {
-      openManualPaymentModal(btn.dataset.subid, 'fagtax', \`FagTax Rechnung KW \${btn.dataset.kw} bezahlt\`, btn.dataset.amt);
+      openManualPaymentModal(btn.dataset.subid, 'fagtax', `FagTax Rechnung KW ${btn.dataset.kw} bezahlt`, btn.dataset.amt);
       db.collection('fagTaxes').doc(btn.dataset.ftid).update({
         paid: true,
         paidAt: firebase.firestore.FieldValue.serverTimestamp()
