@@ -344,9 +344,11 @@ function initFirebase() {
   try {
     firebase.initializeApp(CONFIG.firebase);
     db = firebase.firestore();
-    db.settings({ merge: true });
     return true;
-  } catch (e) { return false; }
+  } catch (e) {
+    console.error("Firebase init error:", e);
+    return false;
+  }
 }
 
 function isFirebaseConfigured() {
