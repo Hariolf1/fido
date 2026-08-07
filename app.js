@@ -1119,28 +1119,20 @@ async function updateSubUsername(id, username) {
 }
 async function deleteSub(id) {
   try {
-    // 1. Soft-delete first: update active to false (allowed by update rules)
-    await db.collection('subs').doc(id).update({ active: false });
-    
-    // 2. Immediately remove from local state and update UI
+    // Hard-delete main sub document directly from Firestore
+    await db.collection('subs').doc(id).delete();
     subs = subs.filter(s => s.id !== id);
     renderSubs();
     populateSubSelects();
     renderFagTaxOverview();
-    showToast('Sau entfernt', 'success');
+    showToast('Sau + alle Daten gelöscht', 'success');
 
-    // 3. Try hard-delete on sub doc & related docs (if Firestore rules permit)
-    try { await db.collection('subs').doc(id).delete(); } catch (_) {}
-
+    // Clean up all associated sub-collection documents
     const cols = ['sessions', 'payments', 'fagTaxes', 'accountChecks', 'wheelSpins', 'loanContracts', 'shopBids'];
     for (const col of cols) {
-      try {
-        const snap = await db.collection(col).where('subId', '==', id).get();
-        const del = snap.docs.map(d => d.ref.delete());
-        await Promise.all(del);
-      } catch (colErr) {
-        console.warn(`Soft cleanup for ${col}:`, colErr);
-      }
+      const snap = await db.collection(col).where('subId', '==', id).get();
+      const del = snap.docs.map(d => d.ref.delete());
+      await Promise.all(del);
     }
     return true;
   } catch (err) { 
@@ -5313,32 +5305,12 @@ function openCreateShopItemModal() {
       return false;
     }
 
-    const itemObj = {
-      id: 'shop_' + Date.now(),
+    await db.collection('shopItems').add({
       title, description: desc, minBid, shippingCost: shipping,
       imageUrl: finalImage,
-      createdAt: new Date(),
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
       status: 'active'
-    };
-
-    try {
-      if (db) {
-        const ref = await db.collection('shopItems').add({
-          title, description: desc, minBid, shippingCost: shipping,
-          imageUrl: finalImage,
-          createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-          status: 'active'
-        });
-        itemObj.id = ref.id;
-      }
-    } catch (e) {
-      console.warn('Firestore shopItems write fallback to local state:', e);
-    }
-
-    if (!shopItems.some(i => i.id === itemObj.id)) {
-      shopItems.push(itemObj);
-    }
-    renderDomShopOverview();
+    });
     showToast('Shop-Artikel erfolgreich eingestellt! 🛍', 'success');
   });
 
