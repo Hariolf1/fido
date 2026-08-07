@@ -1119,17 +1119,19 @@ async function updateSubUsername(id, username) {
 }
 async function deleteSub(id) {
   try {
-    // 1. Delete main sub document first
-    await db.collection('subs').doc(id).delete();
+    // 1. Soft-delete first: update active to false (allowed by update rules)
+    await db.collection('subs').doc(id).update({ active: false });
     
     // 2. Immediately remove from local state and update UI
     subs = subs.filter(s => s.id !== id);
     renderSubs();
     populateSubSelects();
     renderFagTaxOverview();
-    showToast('Sau gelöscht', 'success');
+    showToast('Sau entfernt', 'success');
 
-    // 3. Clean up associated collection records gracefully
+    // 3. Try hard-delete on sub doc & related docs (if Firestore rules permit)
+    try { await db.collection('subs').doc(id).delete(); } catch (_) {}
+
     const cols = ['sessions', 'payments', 'fagTaxes', 'accountChecks', 'wheelSpins', 'loanContracts', 'shopBids'];
     for (const col of cols) {
       try {
@@ -1137,7 +1139,7 @@ async function deleteSub(id) {
         const del = snap.docs.map(d => d.ref.delete());
         await Promise.all(del);
       } catch (colErr) {
-        console.warn(`Fehler beim Bereinigen von ${col}:`, colErr);
+        console.warn(`Soft cleanup for ${col}:`, colErr);
       }
     }
     return true;
