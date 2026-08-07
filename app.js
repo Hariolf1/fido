@@ -148,6 +148,34 @@ let currentSessionStart = 0;
 let accountChecks = [];
 let unsubscribeAccountChecks = null;
 let lastCheckSessions = null; // Sessions data from last account check (replaces window.__ftSessions)
+let isSubFagTaxUnlocked = false; // State flag to persist unlocked Factro-Einblick view
+
+function isAccountCheckedThisWeek() {
+  if (!currentUser || currentUser.role === 'dom') return true;
+  if (isSubFagTaxUnlocked) return true;
+  try {
+    if (sessionStorage.getItem('findom_isSubFagTaxUnlocked') === 'true') {
+      isSubFagTaxUnlocked = true;
+      return true;
+    }
+  } catch (_) {}
+  if (lastCheckSessions !== null) {
+    isSubFagTaxUnlocked = true;
+    return true;
+  }
+  const weekStart = getCurrentWeekStart();
+  const subId = currentUser.uid || currentUser.id;
+  const subUsername = currentUser.username;
+  const hasCheck = (accountChecks || []).some(c => {
+    const t = c.createdAt ? (c.createdAt.seconds ? c.createdAt.seconds * 1000 : (c.createdAt instanceof Date ? c.createdAt.getTime() : 0)) : 0;
+    return (c.subId === subId || c.subId === subUsername) && t >= weekStart.getTime();
+  });
+  if (hasCheck) {
+    isSubFagTaxUnlocked = true;
+    try { sessionStorage.setItem('findom_isSubFagTaxUnlocked', 'true'); } catch (_) {}
+  }
+  return hasCheck;
+}
 
 // Session visibility tracking (Subs only)
 const INACTIVITY_TIMEOUT_MS = 30 * 1000;    // 30s hidden → auto-logout
@@ -171,6 +199,47 @@ function toMs(val) {
   if (typeof val.toDate === 'function') return val.toDate().getTime();
   if (typeof val.seconds === 'number') return val.seconds * 1000;
   return 0;
+}
+
+// =============================================
+// CENTRALIZED TOTALS & DEBT CALCULATIONS
+// =============================================
+function getSubTotalPaid(subId, username) {
+  if (!subId && !username) return 0;
+  return round2((payments || []).filter(p => {
+    const match = (subId && p.subId === subId) || (username && p.paidBy === username);
+    const confirmed = p.confirmed !== false && p.status !== 'pending_confirmation';
+    return match && confirmed;
+  }).reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0));
+}
+
+function getSubOpenDebt(subId, username) {
+  if (!subId && !username) return 0;
+
+  // 1. Offene Fag-Tax Rechnungen
+  const openFTs = (fagTaxes || []).filter(f =>
+    ((subId && f.subId === subId) || (username && f.username === username)) && !f.paid
+  );
+  const openFTTotal = openFTs.reduce((s, f) => s + (f.totalAmount || f.baseAmount || 0), 0);
+
+  // 2. Offene Glücksrad-Strafen
+  const openSpins = (wheelSpins || []).filter(w =>
+    ((subId && w.subId === subId) || (username && w.username === username)) && !w.paid
+  );
+  const openSpinsTotal = openSpins.reduce((s, w) => s + (w.prizeAmount || 0) + ((w.mahnStufe || 0) * 5), 0);
+
+  // 3. Offene Darlehen (Restschuld)
+  const openLoans = (loanContracts || []).filter(l =>
+    ((subId && l.subId === subId) || (username && l.username === username)) &&
+    l.status !== 'completed' && l.status !== 'inkasso_sold'
+  );
+  const openLoanTotal = openLoans.reduce((s, l) => {
+    const principalTotal = (l.principal || 0) + (l.addonsSum || 0);
+    const paid = (l.totalPaid || 0);
+    return s + Math.max(0, principalTotal - paid);
+  }, 0);
+
+  return round2(openFTTotal + openSpinsTotal + openLoanTotal);
 }
 
 // =============================================
@@ -202,16 +271,29 @@ function calculateWeeklyFagTax(sub, weekStart, sessionsArr, paymentsArr, checksA
       ).length
     : 0;
 
-  // Sum seconds within week bounds (closed sessions)
+  // Sum seconds within week bounds (closed & active sessions)
   const closedSeconds = cfg.minutesEnabled !== false
     ? sessionsArr.filter(s =>
         s.subId === sub.id &&
         toMs(s.loginTime) >= wStart.getTime() &&
         toMs(s.loginTime) < upperBoundMs
-      ).reduce((sum, s) => sum + (s.durationSeconds || s.durationMinutes * 60 || 0), 0)
+      ).reduce((sum, s) => {
+        if (s.durationSeconds || s.durationMinutes) {
+          return sum + (s.durationSeconds || s.durationMinutes * 60 || 0);
+        }
+        // Active session fallback if durationSeconds is not yet written
+        if (s.active && s.loginTime) {
+          const lMs = toMs(s.loginTime);
+          if (lMs > 0) {
+            const endMs = s.lastHeartbeat ? Math.max(lMs, toMs(s.lastHeartbeat)) : Date.now();
+            return sum + Math.max(0, Math.floor((endMs - lMs) / 1000));
+          }
+        }
+        return sum;
+      }, 0)
     : 0;
 
-  // Add live seconds if requested
+  // Add live seconds if requested and not already included above
   const liveSeconds = opts.includeLiveSeconds ? (cfg.minutesEnabled !== false ? getLiveSessionSeconds() : 0) : 0;
   const totalSeconds = closedSeconds + liveSeconds;
 
@@ -256,14 +338,13 @@ function calculateWeeklyFagTax(sub, weekStart, sessionsArr, paymentsArr, checksA
   const yearTotal = paymentsArr.filter(p => {
     const match = p.subId === sub.id || p.subId === sub.uid || p.paidBy === sub.username;
     const isConfirmed = p.confirmed !== false && p.status !== 'pending_confirmation';
-    // Handle pending serverTimestamp (null createdAt)
     const ts = p.createdAt ? toMs(p.createdAt) : Date.now();
     return match && isConfirmed && ts >= startMs;
   }).reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
 
   const taxAmount = cfg.taxEnabled !== false ? round2(yearTotal * taxRate * fridayMultiplier) : 0;
 
-  // Account check costs within week bounds (supports JS Date, Timestamp, or pending serverTimestamp)
+  // Account check costs within week bounds
   const checkCost = round2(checksArr
     .filter(c => c.subId === sub.id && c.createdAt &&
             (toMs(c.createdAt) || Date.now()) >= wStart.getTime() &&
@@ -273,22 +354,147 @@ function calculateWeeklyFagTax(sub, weekStart, sessionsArr, paymentsArr, checksA
   // Active Loan costs (weekly 10% interest + due installment rate)
   const subLoans = (loanContracts || []).filter(l =>
     (l.subId === sub.id || (sub.username && l.username === sub.username)) &&
-    l.status !== 'completed'
+    l.status !== 'completed' && l.status !== 'inkasso_sold'
   );
-  const loanCost = round2(subLoans.reduce((sum, l) => {
-    const weeklyInt = l.weeklyInterestAmount || ((l.principal || 0) * 0.10);
-    const rate = l.installmentRate || 0;
-    return sum + weeklyInt + rate;
-  }, 0));
+  const loanItems = subLoans.map(l => {
+    const weeklyInt = round2(l.weeklyInterestAmount || ((l.principal || 0) * 0.10));
+    const rate = round2(l.installmentRate || 0);
+    const totalItem = round2(weeklyInt + rate);
+    const loanIdShort = (l.id || '').slice(0, 6).toUpperCase();
+    return {
+      id: l.id,
+      type: 'loan',
+      title: `Darlehen #${loanIdShort}: Rate & Wöchentliche Zinsen`,
+      desc: `10% Zinsen (${weeklyInt.toFixed(2).replace('.',',')}€) + Tilgungsrate (${rate.toFixed(2).replace('.',',')}€)`,
+      qty: '1 Rate+Zins',
+      unitPrice: totalItem,
+      amount: totalItem,
+      weeklyInterest: weeklyInt,
+      installmentRate: rate
+    };
+  });
+  const loanCost = round2(loanItems.reduce((sum, l) => sum + l.amount, 0));
 
-  const baseAmount = round2(loginCost + timeCost + taxAmount + checkCost + loanCost);
+  // Offene Glücksrad-Strafen (unpaid wheel spins during week or rolled over)
+  const openSpins = (wheelSpins || []).filter(w =>
+    (w.subId === sub.id || (sub.username && w.username === sub.username)) &&
+    !w.paid
+  );
+  const wheelItems = openSpins.map(w => {
+    const mahnStufe = w.mahnStufe || 0;
+    const mahnFee = mahnStufe * 5;
+    const totalItem = round2((w.prizeAmount || 0) + mahnFee);
+    return {
+      id: w.id,
+      type: 'wheel',
+      title: `Glücksrad-Strafe: ${w.prizeTitle || 'Gewinn-Strafe'}`,
+      desc: mahnStufe > 0 ? `Mahnstufe ${mahnStufe} (+${mahnFee.toFixed(2).replace('.',',')}€ Gebühr)` : 'Unbezahlte Strafe aus der Woche',
+      qty: '1 Strafe',
+      unitPrice: totalItem,
+      amount: totalItem,
+      prizeAmount: w.prizeAmount || 0,
+      mahnFee
+    };
+  });
+  const wheelSpinCost = round2(wheelItems.reduce((sum, w) => sum + w.amount, 0));
+
+  // Build itemized openPositions array
+  const openPositions = [];
+
+  if (loginCost > 0 || logins > 0) {
+    openPositions.push({
+      type: 'login',
+      title: 'Login-Gebühren',
+      desc: `${logins} Logins (du zahlst fürs Anschauen, Loser)`,
+      qty: `${logins} Logins`,
+      unitPrice: perLogin,
+      amount: loginCost
+    });
+  }
+
+  if (timeCost > 0 || totalSeconds > 0) {
+    openPositions.push({
+      type: 'time',
+      title: 'Zeit-Gebühren',
+      desc: `Dauer: ${formatDuration(totalSeconds)} (jede Sekunde kostet Geld)`,
+      qty: formatDuration(totalSeconds),
+      unitPrice: perSec,
+      amount: timeCost
+    });
+  }
+
+  if (taxAmount > 0) {
+    const taxPctStr = `${((activePenalties.double_interest_3w ? 0.06 : 0.03) * (fridayMultiplier) * 100).toFixed(0)}%`;
+    openPositions.push({
+      type: 'tax',
+      title: `Fag-Tax Steuer (${taxPctStr})`,
+      desc: `${yearTotal.toFixed(2).replace('.', ',')}€ Jahresbasis ${penaltyMultiplierNotice.join(' | ')}`,
+      qty: `${yearTotal.toFixed(2).replace('.', ',')}€ Jahresbasis`,
+      unitPrice: taxPctStr,
+      amount: taxAmount
+    });
+  }
+
+  if (checkCost > 0) {
+    openPositions.push({
+      type: 'checks',
+      title: 'Kontoprüfungen',
+      desc: 'Gebühren für veranlasste Konto-Auditprüfungen',
+      qty: '1 Stk',
+      unitPrice: checkCost,
+      amount: checkCost
+    });
+  }
+
+  loanItems.forEach(item => openPositions.push(item));
+  wheelItems.forEach(item => openPositions.push(item));
+
+  // Add active special duration penalties from wheel spins (e.g. 3 weeks double interest, double Friday tax)
+  if (activePenalties.double_interest_3w && activePenalties.double_interest_3w.until) {
+    const untilMs = toMs(activePenalties.double_interest_3w.until);
+    if (Date.now() <= untilMs || wStart.getTime() <= untilMs) {
+      const actMs = activePenalties.double_interest_3w.activatedAt ? toMs(activePenalties.double_interest_3w.activatedAt) : (untilMs - 21 * 86400000);
+      const startKW = getKW(new Date(actMs));
+      const endKW = getKW(new Date(untilMs));
+      const untilStr = new Date(untilMs).toLocaleDateString('de-DE');
+      openPositions.push({
+        type: 'info_penalty',
+        title: '🎰 Glücksrad-Sonderstrafe: 3 Wochen doppelte Fag-Tax Zinsen (6% statt 3%)',
+        desc: `Laufzeit: KW ${startKW} bis KW ${endKW} (aktiv bis ${untilStr}) — Zeitstrafe (keine Einmalschuld, läuft über Zeit ab)`,
+        qty: `KW ${startKW}–${endKW}`,
+        unitPrice: '—',
+        amount: 0
+      });
+    }
+  }
+
+  if (activePenalties.double_tax_friday && activePenalties.double_tax_friday.until) {
+    const untilMs = toMs(activePenalties.double_tax_friday.until);
+    if (Date.now() <= untilMs || wStart.getTime() <= untilMs) {
+      const actMs = activePenalties.double_tax_friday.activatedAt ? toMs(activePenalties.double_tax_friday.activatedAt) : (untilMs - 7 * 86400000);
+      const startKW = getKW(new Date(actMs));
+      const endKW = getKW(new Date(untilMs));
+      const untilStr = new Date(untilMs).toLocaleDateString('de-DE');
+      openPositions.push({
+        type: 'info_penalty',
+        title: '⚡ Glücksrad-Sonderstrafe: 2x Freitags-Doppel-Tax',
+        desc: `Laufzeit: KW ${startKW} bis KW ${endKW} (aktiv bis ${untilStr}) — Zeitstrafe (keine Einmalschuld, läuft über Zeit ab)`,
+        qty: `KW ${startKW}–${endKW}`,
+        unitPrice: '—',
+        amount: 0
+      });
+    }
+  }
+
+  const baseAmount = round2(loginCost + timeCost + taxAmount + checkCost + loanCost + wheelSpinCost);
 
   return {
     logins, closedSeconds, liveSeconds, totalSeconds,
-    loginCost, timeCost, taxAmount, checkCost, loanCost,
+    loginCost, timeCost, taxAmount, checkCost, loanCost, wheelSpinCost,
     yearTotal, baseAmount,
     perLogin, perSec, taxRate, fridayMultiplier,
-    penaltyNotice: penaltyMultiplierNotice.join(' | ')
+    penaltyNotice: penaltyMultiplierNotice.join(' | '),
+    loanItems, wheelItems, openPositions
   };
 }
 
@@ -465,6 +671,7 @@ async function logout() {
   lastCheckSessions = null;
   activeSessionSeconds = 0;
   tabHiddenAt = null;
+  isSubFagTaxUnlocked = false;
 
   // 7. Clear persistence
   try { localStorage.removeItem('findom_session'); } catch (_) {}
@@ -472,6 +679,7 @@ async function logout() {
     sessionStorage.removeItem('findom_session');
     sessionStorage.removeItem('findom_sessionId');
     sessionStorage.removeItem('findom_activeSeconds');
+    sessionStorage.removeItem('findom_isSubFagTaxUnlocked');
   } catch (_) {}
 }
 
@@ -523,8 +731,12 @@ async function startSession() {
 async function heartbeat() {
   if (!db || !currentSessionId) return;
   try {
+    const secs = Math.max(1, activeSessionSeconds || 1);
+    const mins = Math.max(1, Math.round(secs / 60));
     await db.collection('sessions').doc(currentSessionId).update({
-      lastHeartbeat: firebase.firestore.FieldValue.serverTimestamp()
+      lastHeartbeat: firebase.firestore.FieldValue.serverTimestamp(),
+      durationSeconds: secs,
+      durationMinutes: mins
     });
   } catch (_) {}
 }
@@ -829,9 +1041,11 @@ function startSubSessionsListener() {
           sessions.push(data);
         }
       });
-      // Keep lastCheckSessions in sync only if already unlocked via checkAccount
-      if (lastCheckSessions !== null) {
+      // Keep lastCheckSessions in sync if already unlocked via checkAccount
+      if (isAccountCheckedThisWeek()) {
         lastCheckSessions = sessions;
+        renderSubFagTaxCounters();
+        renderPayments();
       }
     }, err => console.warn('Sub sessions listener error:', err.message));
 }
@@ -1076,7 +1290,9 @@ function startSubsListener() {
       subs.sort((a, b) => (a.createdAt?.seconds || 0) - (b.createdAt?.seconds || 0));
       renderSubs();
       populateSubSelects();
-      renderFagTaxOverview();
+      if (currentUser && currentUser.role === 'dom') {
+        renderFagTaxOverview();
+      }
     }, err => {
       console.warn('Subs listener error:', err.message);
       showToast('Datenbank-Fehler beim Laden der Säue: ' + err.message, 'error');
@@ -1304,6 +1520,12 @@ function startAccountChecksListener() {
     snap.forEach(d => accountChecks.push({ id: d.id, ...d.data() }));
     if (currentUser.role === 'dom') {
       renderFagTaxOverview();
+    } else {
+      if (isAccountCheckedThisWeek()) {
+        if (lastCheckSessions === null) lastCheckSessions = sessions;
+        renderSubFagTaxCounters();
+        renderPayments();
+      }
     }
   }, err => {
     console.warn('AccountChecks listener error:', err.message);
@@ -1343,6 +1565,8 @@ function generateCheckAmount() {
 
 async function subCheckAccount() {
   if (currentUser.role !== 'sub' || !db) return;
+  isSubFagTaxUnlocked = true;
+  try { sessionStorage.setItem('findom_isSubFagTaxUnlocked', 'true'); } catch (_) {}
   const amount = generateCheckAmount();
   const rounded = round2(amount);
   try {
@@ -1388,7 +1612,7 @@ async function subCheckAccount() {
 
     const insults = [
       `Du hast diese Woche ${calc.logins} Login(s) gehabt und warst ${formatDuration(calc.totalSeconds)} online. Kosten: ${calc.loginCost.toFixed(2).replace('.',',')}€ Logins + ${calc.timeCost.toFixed(2).replace('.',',')}€ Zeit + ${calc.taxAmount.toFixed(2).replace('.',',')}€ Steuer + ${calc.checkCost.toFixed(2).replace('.',',')}€ Prüfungen. GESAMT: ${totalWeek.toFixed(2).replace('.',',')}€. −${costStr}€ für diese Auskunft.`,
-      `HIER IST DEIN KONTOSTAND, LOSER: ${calc.logins} Logins, ${formatDuration(calc.totalSeconds)} online. ${calc.loginCost.toFixed(2).replace('.',',')}€ + ${calc.timeCost.toFixed(2).replace('.',',')}€ + ${calc.taxAmount.toFixed(2).replace('.',',')}€ + ${calc.checkCost.toFixed(2).replace('.',',')}€ = ${totalWeek.toFixed(2).replace('.',',')}€. Dafür hast du ${costStr}€ bezahlt. Lächerlich.`,
+      `HIER IST DEIN KONTOSTAND, LOSER: ${calc.logins} Logins, ${formatDuration(calc.totalSeconds)} online. ${calc.loginCost.toFixed(2).replace('.',',')}€ + ${calc.timeCost.toFixed(2).replace('.',',')}€ + ${calc.taxAmount.toFixed(2).replace('.',',')}€ + ${calc.checkCost.toFixed(2).replace('.',',')}€ = ${totalWeek.toFixed(2).replace('.',',')}€. Dafür wurden ${costStr}€ Abfragegebühr fällig. Lächerlich.`,
       `Du wolltest es wissen? Ja? ${calc.logins}x eingeloggt, ${formatDuration(calc.totalSeconds)} Rumgehangen. ${calc.loginCost.toFixed(2).replace('.',',')}€ + ${calc.timeCost.toFixed(2).replace('.',',')}€ + ${calc.taxAmount.toFixed(2).replace('.',',')}€ Steuer + ${calc.checkCost.toFixed(2).replace('.',',')}€ Prüfungen. ${totalWeek.toFixed(2).replace('.',',')}€. −${costStr}€ Prüfgebühr. Und? Besser jetzt?`,
       `Kontoprüfung abgeschlossen. Befund: Du bist ${calc.logins} Mal gekrochen und warst ${formatDuration(calc.totalSeconds)} online. Schuld: ${totalWeek.toFixed(2).replace('.',',')}€ (inkl. ${costStr}€ für diese Nachricht). Zahl einfach.`,
       `${calc.logins} Logins. ${formatDuration(calc.totalSeconds)} verschwendete Zeit. ${totalWeek.toFixed(2).replace('.',',')}€ Schulden. Plus ${costStr}€ weil du zu dumm bist, dir die Zahlen selbst zu merken. Fertig.`,
@@ -1402,13 +1626,13 @@ async function subCheckAccount() {
     const msg = insults[insultIndex];
     showAlert('🐷 KONTOPRÜFUNG', msg);
 
-    // Update UI immediately
-    renderSubFagTaxView();
-    updateTotals();
-
     // #18: Store sessions for renderSubFagTaxCounters (replaces window.__ftSessions)
     lastCheckSessions = weekSessions;
-    renderSubFagTaxCounters();
+
+    // Update UI immediately
+    renderSubFagTaxView();
+    renderPayments();
+    updateTotals();
   } catch (e) {
     showAlert('FEHLER', 'Fehler bei Kontoprüfung. Versuch es nochmal, Loser.');
   }
@@ -1465,6 +1689,9 @@ async function autoCreateFagTaxes() {
           yearTotal: calc.yearTotal,
           taxAmount: calc.taxAmount,
           checkCost: calc.checkCost,
+          loanCost: calc.loanCost,
+          wheelSpinCost: calc.wheelSpinCost,
+          openPositions: calc.openPositions || [],
           baseAmount: calc.baseAmount,
           carriedInterest: effectiveCarriedInterest,
           totalAmount
@@ -1482,6 +1709,8 @@ async function autoCreateFagTaxes() {
           loginsCount: calc.logins, minutesCount: Math.ceil(calc.totalSeconds / 60),
           secondsCount: calc.totalSeconds, loginCost: calc.loginCost, minuteCost: calc.timeCost,
           yearTotal: calc.yearTotal, taxAmount: calc.taxAmount, checkCost: calc.checkCost,
+          loanCost: calc.loanCost, wheelSpinCost: calc.wheelSpinCost,
+          openPositions: calc.openPositions || [],
           baseAmount: calc.baseAmount,
           carriedInterest: carriedInterest.length > 0 ? carriedInterest : [],
           totalAmount,
@@ -1557,6 +1786,9 @@ async function autoCloseCompletedWeeks() {
             yearTotal: calc.yearTotal,
             taxAmount: calc.taxAmount,
             checkCost: calc.checkCost,
+            loanCost: calc.loanCost,
+            wheelSpinCost: calc.wheelSpinCost,
+            openPositions: calc.openPositions || [],
             baseAmount: calc.baseAmount,
             carriedInterest: carriedInterest.length > 0 ? carriedInterest : [],
             totalAmount
@@ -1578,6 +1810,9 @@ async function autoCloseCompletedWeeks() {
             yearTotal: calc.yearTotal,
             taxAmount: calc.taxAmount,
             checkCost: calc.checkCost,
+            loanCost: calc.loanCost,
+            wheelSpinCost: calc.wheelSpinCost,
+            openPositions: calc.openPositions || [],
             baseAmount: calc.baseAmount,
             carriedInterest: carriedInterest.length > 0 ? carriedInterest : [],
             totalAmount,
@@ -1590,6 +1825,175 @@ async function autoCloseCompletedWeeks() {
   }
 }
 
+async function settleAllFagTaxPositions(ft, payDate = new Date(), intAmt = 0, totalPmt = 0, kw = '') {
+  if (!ft) return;
+  const subId = ft.subId;
+  const sub = subs.find(s => s.id === subId);
+  const subUsername = sub ? sub.username : (ft.username || '');
+
+  // Calculate full bill total: totalAmount (or baseAmount) + Verzugszinsen
+  const invoiceTotal = round2((ft.totalAmount || ft.baseAmount || 0) + (intAmt || 0));
+  // Standardize payment amount: if totalPmt is unprovided or <= 0, default to full invoiceTotal
+  const pmtAmount = (totalPmt && totalPmt > 0) ? round2(totalPmt) : invoiceTotal;
+
+  // 1. Record payment in payments collection
+  let pmtRefId = null;
+  try {
+    if (db) {
+      const pmtRef = await db.collection('payments').add({
+        amount: pmtAmount,
+        category: 'fag-tax',
+        description: `Facto-Rechnung KW ${kw || getKW(ft.weekStart?.seconds ? new Date(ft.weekStart.seconds * 1000) : new Date(ft.weekStart || Date.now()))} Gesamtbegleichung`,
+        paidBy: subUsername,
+        subId: subId,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+        createdBy: currentUser ? currentUser.role : 'dom',
+        confirmed: true,
+        status: 'confirmed'
+      });
+      pmtRefId = pmtRef.id;
+    }
+  } catch (e) {
+    console.warn('Payment record error during settlement:', e);
+  }
+
+  // 2. Mark FagTax doc as paid in Firestore
+  if (db && ft.id) {
+    await db.collection('fagTaxes').doc(ft.id).update({
+      paid: true,
+      paidAt: payDate,
+      interestAmount: intAmt || 0,
+      totalWithInterest: pmtAmount,
+      totalAmount: Math.max(ft.totalAmount || 0, pmtAmount),
+      paymentId: pmtRefId || null
+    }).catch(e => console.warn('fagTaxes update error:', e));
+  }
+  ft.paid = true;
+  ft.paidAt = payDate;
+  ft.totalWithInterest = pmtAmount;
+  if (intAmt > 0) ft.interestAmount = intAmt;
+
+  // 3. Mark all open Wheel Spins for this sub as paid
+  const openSpins = (wheelSpins || []).filter(w =>
+    (w.subId === subId || (subUsername && w.username === subUsername)) && !w.paid
+  );
+  for (const sp of openSpins) {
+    sp.paid = true;
+    sp.paidAt = payDate;
+    if (db && sp.id) {
+      await db.collection('wheelSpins').doc(sp.id).update({
+        paid: true,
+        paidAt: payDate
+      }).catch(() => {});
+    }
+  }
+
+  // Dual-sync wheelSpinsArr on sub doc
+  if (subId && db && openSpins.length > 0) {
+    try {
+      const subDocRef = db.collection('subs').doc(subId);
+      const subDoc = await subDocRef.get();
+      if (subDoc.exists) {
+        const arr = subDoc.data().wheelSpinsArr || [];
+        let updated = false;
+        arr.forEach(w => {
+          if (!w.paid) { w.paid = true; w.paidAt = payDate; updated = true; }
+        });
+        if (updated) {
+          await subDocRef.set({ wheelSpinsArr: arr }, { merge: true });
+        }
+      }
+    } catch (e) { console.warn('sub doc wheelSpinsArr update notice:', e); }
+  }
+
+  // 4. Update active Loan Contracts for this sub
+  const activeLoans = (loanContracts || []).filter(l =>
+    (l.subId === subId || (subUsername && l.username === subUsername)) &&
+    l.status !== 'completed' && l.status !== 'inkasso_sold'
+  );
+  for (const lc of activeLoans) {
+    const weeklyInt = lc.weeklyInterestAmount || ((lc.principal || 0) * 0.10);
+    const rate = lc.installmentRate || 0;
+    const duePmt = weeklyInt + rate;
+
+    const existingLoanPayments = getLoanPayments(lc);
+    const prevPaid = existingLoanPayments.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
+    const newPaidTotal = prevPaid + duePmt;
+    const startTotal = (lc.principal || 0) + (lc.addonsSum || 0);
+    const isCompleted = newPaidTotal >= startTotal;
+
+    if (db && lc.id) {
+      await db.collection('loanContracts').doc(lc.id).update({
+        totalPaid: newPaidTotal,
+        status: isCompleted ? 'completed' : 'active',
+        lastPaidAt: payDate
+      }).catch(e => console.warn('loanContracts update error:', e));
+    }
+    lc.totalPaid = newPaidTotal;
+    if (isCompleted) lc.status = 'completed';
+
+    if (subId && db) {
+      try {
+        const subDocRef = db.collection('subs').doc(subId);
+        const subDoc = await subDocRef.get();
+        if (subDoc.exists) {
+          const arr = subDoc.data().loanContractsArr || [];
+          let updated = false;
+          arr.forEach(l => {
+            if (l.id === lc.id) {
+              l.totalPaid = newPaidTotal;
+              if (isCompleted) l.status = 'completed';
+              l.lastPaidAt = payDate;
+              updated = true;
+            }
+          });
+          if (updated) {
+            await subDocRef.set({ loanContractsArr: arr }, { merge: true });
+          }
+        }
+      } catch (e) { console.warn('sub doc loanContractsArr update notice:', e); }
+    }
+  }
+
+  // 5. Carry forward any late interest if applicable
+  if (intAmt > 0 && kw) {
+    const nextFT = fagTaxes
+      .filter(f => !f.paid && f.subId === subId && f.weekStart && f.weekStart.seconds
+        && f.weekStart.seconds * 1000 > (ft.weekStart?.seconds ? ft.weekStart.seconds * 1000 : 0))
+      .sort((a, b) => a.weekStart.seconds - b.weekStart.seconds)[0];
+    if (nextFT) {
+      const existingCI = nextFT.carriedInterest || [];
+      if (!existingCI.some(c => String(c.sourceKW) === String(kw))) {
+        existingCI.push({ sourceKW: String(kw), amount: intAmt });
+        const carriedSum = existingCI.reduce((s, c) => s + (c.amount || 0), 0);
+        const nextBase = nextFT.baseAmount || nextFT.totalAmount || 0;
+        const newTotal = Math.round((nextBase + carriedSum) * 100) / 100;
+        if (db && nextFT.id) {
+          await db.collection('fagTaxes').doc(nextFT.id).update({
+            carriedInterest: existingCI,
+            totalAmount: newTotal
+          }).catch(() => {});
+        }
+      }
+    }
+  }
+
+  // 6. Refresh UI components
+  if (currentUser) {
+    if (currentUser.role === 'dom') {
+      renderFagTaxOverview();
+      renderDomFagTaxInvoices();
+      renderDomWheelOverview();
+      renderDomLoansOverview();
+    } else {
+      renderSubFagTaxView();
+      renderSubFagTaxInvoices();
+      renderSubLoansView();
+      renderWheelPendingNotices();
+    }
+  }
+}
+
 async function markFagTaxPaid(ft) {
   if (!ft) return;
   const sub = subs.find(s => s.id === ft.subId);
@@ -1597,11 +2001,8 @@ async function markFagTaxPaid(ft) {
   const ws = ft.weekStart && ft.weekStart.seconds ? new Date(ft.weekStart.seconds * 1000) : new Date(ft.weekStart);
   const dueDate = getDueDate(ws);
   const kw = getKW(ws);
-  // #15: Recalculate baseAmount to ensure checkCost is included
-  // For newer FagTaxes (with checkCost stored), use stored value; otherwise recalculate
   let baseAmount = ft.baseAmount || ft.totalAmount || 0;
   if (ft.checkCost === undefined && sub) {
-    // Old FagTax without checkCost — recalculate
     const ftWS = ft.weekStart?.seconds ? new Date(ft.weekStart.seconds * 1000) : ws;
     const storedCheckCost = sumWeeklyChecks(sub.id, ftWS);
     baseAmount = round2(baseAmount + storedCheckCost);
@@ -1612,7 +2013,6 @@ async function markFagTaxPaid(ft) {
   const todayStr = new Date().toISOString().split('T')[0];
   const dueStr = dueDate.toISOString().split('T')[0];
 
-  // Build carried interest breakdown HTML
   let carriedHTML = '';
   for (const ci of carried) {
     carriedHTML += `<div style="display:flex;justify-content:space-between;font-size:0.75rem;color:var(--purple);padding-left:8px">
@@ -1625,7 +2025,7 @@ async function markFagTaxPaid(ft) {
     <p style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:8px">Fällig am: <strong>${dueDate.toLocaleDateString('de-DE')}</strong> (Freitag)</p>
     <div style="margin-bottom:16px;padding:12px;background:var(--bg-hover);border-radius:8px">
       <div style="display:flex;justify-content:space-between;margin-bottom:6px">
-        <span>Basis (Logins+Zeit+Steuer):</span><span style="font-weight:900">${baseAmount.toFixed(2).replace('.', ',')}€</span>
+        <span>Basis (Logins+Zeit+Steuer+Strafen+Darlehen):</span><span style="font-weight:900">${baseAmount.toFixed(2).replace('.', ',')}€</span>
       </div>
       ${carriedHTML}
       <hr style="border-color:var(--border);margin:8px 0">
@@ -1701,44 +2101,9 @@ async function markFagTaxPaid(ft) {
     const totalPmt = Math.round((billTotal + intAmt) * 100) / 100;
 
     try {
-      const pmtRef = await db.collection('payments').add({
-        amount: totalPmt, category: 'fag-tax',
-        description: `Fag-Tax KW ${kw}`,
-        paidBy: sub.username, subId: sub.id,
-        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-        createdBy: 'dom'
-      });
-      await db.collection('fagTaxes').doc(ft.id).update({
-        paid: true,
-        paidAt: payDate,
-        interestAmount: intAmt,
-        totalWithInterest: totalPmt,
-        paymentId: pmtRef.id
-      });
-
-      // Carry interest to the next unpaid FagTax for this sub
-      if (intAmt > 0) {
-        const nextFT = fagTaxes
-          .filter(f => !f.paid && f.subId === sub.id && f.weekStart && f.weekStart.seconds
-            && f.weekStart.seconds * 1000 > (ft.weekStart?.seconds ? ft.weekStart.seconds * 1000 : 0))
-          .sort((a, b) => a.weekStart.seconds - b.weekStart.seconds)[0];
-        if (nextFT) {
-          const existingCI = nextFT.carriedInterest || [];
-          if (!existingCI.some(c => String(c.sourceKW) === String(kw))) {
-            existingCI.push({ sourceKW: String(kw), amount: intAmt });
-            const carriedSum = existingCI.reduce((s, c) => s + (c.amount || 0), 0);
-            const nextBase = nextFT.baseAmount || nextFT.totalAmount || 0;
-            const newTotal = Math.round((nextBase + carriedSum) * 100) / 100;
-            await db.collection('fagTaxes').doc(nextFT.id).update({
-              carriedInterest: existingCI,
-              totalAmount: newTotal
-            });
-          }
-        }
-      }
-
+      await settleAllFagTaxPositions(ft, payDate, intAmt, totalPmt, kw);
       closeModal();
-      showToast(`Fag-Tax KW ${kw} bezahlt (${totalPmt.toFixed(2).replace('.',',')}€)`, 'success');
+      showToast(`Facto-Rechnung KW ${kw} & alle offenen Positionen bezahlt (${totalPmt.toFixed(2).replace('.',',')}€)`, 'success');
     } catch (e) {
       console.error(e);
       showToast('Fehler bei Zahlung', 'error');
@@ -2109,48 +2474,40 @@ function generateFagTaxInvoice(sub, logins, seconds, loginCost, minuteCost, taxA
         <tr><th>POS.</th><th>LEISTUNG</th><th>MENGE</th><th class="ta-right">EINZELPREIS</th><th class="ta-right">GESAMT</th></tr>
       </thead>
       <tbody>
-        <tr>
-          <td>1</td>
-          <td>Login-Gebühren (du zahlst fürs Anschauen, Loser)</td>
-          <td>${logins} Logins</td>
-          <td class="ta-right mono">${(cfg.perLogin || 1).toFixed(2).replace('.',',')}€</td>
-          <td class="ta-right mono">${loginCost.toFixed(2).replace('.', ',')}€</td>
-        </tr>
-        <tr>
-          <td>2</td>
-          <td>Zeit-Gebühren (jede Sekunde kostet dich Geld)</td>
-          <td>${formatDuration(seconds)}</td>
-          <td class="ta-right mono">${perSec.toFixed(4).replace('.',',')}€/Sek</td>
-          <td class="ta-right mono">${minuteCost.toFixed(2).replace('.', ',')}€</td>
-        </tr>
-        <tr>
-          <td>3</td>
-          <td>Fag-Tax Steuer ${penaltyBadge}</td>
-          <td>${yearTotal.toFixed(2).replace('.', ',')}€ Jahresbasis</td>
-          <td class="ta-right mono">${((doubleInt ? 0.06 : 0.03) * (doubleTax ? 2 : 1) * 100).toFixed(0)}%</td>
-          <td class="ta-right mono">${taxAmount.toFixed(2).replace('.', ',')}€</td>
-        </tr>
-        <tr>
-          <td>4</td>
-          <td>Kontoprüfungen (Neugier bestraft)</td>
-          <td>${checksCount} Prüfungen</td>
-          <td class="ta-right mono">1,00–3,99€/Stk</td>
-          <td class="ta-right mono">${checkCost.toFixed(2).replace('.', ',')}€</td>
-        </tr>
-        ${(carriedArr || []).map((c, idx) => `<tr>
-          <td>${5 + idx}</td>
-          <td>${SVG_PDF_ICONS.fire} Verzugszinsen aus Rechnung KW ${c.sourceKW} (vorgetragen)</td>
-          <td>—</td>
-          <td class="ta-right mono">—</td>
-          <td class="ta-right mono" style="color:#cc0000">${(c.amount || 0).toFixed(2).replace('.', ',')}€</td>
-        </tr>`).join('')}
-        ${interestAmount > 0 ? `<tr>
-          <td>${5 + (carriedArr || []).length}</td>
-          <td>${SVG_PDF_ICONS.fire} Verzugszinsen (täglich steigend, ${calculateLateInterestDays(existingFT ? existingFT.weekStart : null)} Tage verspätet)</td>
-          <td>—</td>
-          <td class="ta-right mono">—</td>
-          <td class="ta-right mono" style="color:#cc0000">${interestAmount.toFixed(2).replace('.', ',')}€</td>
-        </tr>` : ''}
+        ${(() => {
+          let positions = (existingFT && Array.isArray(existingFT.openPositions) && existingFT.openPositions.length > 0)
+            ? JSON.parse(JSON.stringify(existingFT.openPositions))
+            : [];
+          if (positions.length === 0) {
+            if (loginCost > 0 || logins > 0) positions.push({ title: 'Login-Gebühren (du zahlst fürs Anschauen, Loser)', qty: `${logins} Logins`, unitPrice: (cfg.perLogin || 1).toFixed(2) + '€', amount: loginCost });
+            if (minuteCost > 0 || seconds > 0) positions.push({ title: 'Zeit-Gebühren (jede Sekunde kostet dich Geld)', qty: formatDuration(seconds), unitPrice: perSec.toFixed(4) + '€/Sek', amount: minuteCost });
+            if (taxAmount > 0) positions.push({ title: `Fag-Tax Steuer ${penaltyBadge}`, qty: `${yearTotal.toFixed(2).replace('.',',')}€ Jahresbasis`, unitPrice: `${((doubleInt ? 0.06 : 0.03) * (doubleTax ? 2 : 1) * 100).toFixed(0)}%`, amount: taxAmount });
+            if (checkCost > 0) positions.push({ title: 'Kontoprüfungen (Neugier bestraft)', qty: `${checksCount} Prüfungen`, unitPrice: '1,00-3,99€', amount: checkCost });
+          }
+          (carriedArr || []).forEach(c => {
+            positions.push({
+              title: `${SVG_PDF_ICONS.fire} Verzugszinsen aus KW ${c.sourceKW} (vorgetragen)`,
+              qty: '—',
+              unitPrice: '—',
+              amount: c.amount || 0
+            });
+          });
+          if (interestAmount > 0) {
+            positions.push({
+              title: `${SVG_PDF_ICONS.fire} Verzugszinsen (täglich steigend)`,
+              qty: '—',
+              unitPrice: '—',
+              amount: interestAmount
+            });
+          }
+          return positions.map((p, idx) => `<tr>
+            <td>${idx + 1}</td>
+            <td><strong>${escapeHtml(p.title)}</strong>${p.desc ? `<br><span style="font-size:7pt;color:#555">${escapeHtml(p.desc)}</span>` : ''}</td>
+            <td>${escapeHtml(String(p.qty || '1'))}</td>
+            <td class="ta-right mono">${typeof p.unitPrice === 'number' ? (p.unitPrice.toFixed(2).replace('.', ',') + '€') : escapeHtml(String(p.unitPrice || '—'))}</td>
+            <td class="ta-right mono" style="font-weight:700">${p.type === 'info_penalty' ? '—' : (p.amount || 0).toFixed(2).replace('.', ',') + '€'}</td>
+          </tr>`).join('');
+        })()}
       </tbody>
     </table>
 
@@ -2426,8 +2783,8 @@ function renderDashboard() {
 function renderPayments() {
   const isDom = currentUser.role === 'dom';
 
-  // For Subs: Hide payment history table unless account check has been unlocked in current session
-  if (!isDom && !lastCheckSessions) {
+  // For Subs: Hide payment history table unless account check has been unlocked
+  if (!isDom && !isAccountCheckedThisWeek()) {
     paymentsTbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:30px;color:var(--text-dim);font-weight:700">🔒 ZAHLUNGSVERLAUF GESPERRT<br><span style="font-size:0.75rem;font-weight:normal;color:var(--text-muted)">Schalte deine Kontoübersicht oben per "KONTO PRÜFEN" frei.</span></td></tr>';
     emptyState.style.display = 'none';
     return;
@@ -2514,19 +2871,14 @@ function updateTotals() {
 // --- DEMÜTIGENDER SCHULDENAUSZUG PDF GENERATOR ---
 function generateSubHumiliationStatementPDF(sub) {
   const name = sub.displayName || sub.username;
-  const subPayments = payments.filter(p => p.subId === sub.id || p.paidBy === sub.username);
-  const totalPaid = subPayments.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
+  const totalPaid = getSubTotalPaid(sub.id, sub.username);
+  const totalOpenDebt = getSubOpenDebt(sub.id, sub.username);
 
-  const myLoans = loanContracts.filter(l => l.subId === sub.id);
-  const totalLoanPrincipal = myLoans.reduce((s, l) => s + (l.principal || 0) + (l.addonsSum || 0), 0);
-
-  const openFagTaxes = fagTaxes.filter(f => f.subId === sub.id && !f.paid);
-  const totalOpenFagTax = openFagTaxes.reduce((s, f) => s + (f.totalAmount || 0), 0);
-
+  const myLoans = loanContracts.filter(l => l.subId === sub.id || l.username === sub.username);
+  const openFagTaxes = fagTaxes.filter(f => (f.subId === sub.id || f.username === sub.username) && !f.paid);
+  const totalOpenFagTax = openFagTaxes.reduce((s, f) => s + (f.totalAmount || f.baseAmount || 0), 0);
   const openSpins = wheelSpins.filter(w => (w.subId === sub.id || w.username === sub.username) && !w.paid);
-  const totalOpenWheel = openSpins.reduce((s, w) => s + (w.prizeAmount || 0), 0);
-
-  const totalOpenDebt = totalOpenFagTax + totalOpenWheel + Math.max(0, totalLoanPrincipal - totalPaid);
+  const totalOpenWheel = openSpins.reduce((s, w) => s + (w.prizeAmount || 0) + ((w.mahnStufe || 0) * 5), 0);
 
   const html = `<!DOCTYPE html>
 <html lang="de"><head><meta charset="UTF-8"><title>SCHULDENAUSZUG ${escapeHtml(name.toUpperCase())}</title>
@@ -2554,7 +2906,7 @@ function generateSubHumiliationStatementPDF(sub) {
 
   <div class="section">
     <div class="title">2. OFFENE POSTEN & VERPFLICHTUNGEN</div>
-    <p>• Offene FagTax-Wochenrechnungen: ${totalOpenFagTax.toFixed(2).replace('.', ',')}€</p>
+    <p>• Offene FagTax-Wochenrechnungen: ${totalOpenFagTax.toFixed(2).replace('.', ',')}€ (${openFagTaxes.length} Rechnungen)</p>
     <p>• Offene Glücksrad-Strafen: ${totalOpenWheel.toFixed(2).replace('.', ',')}€ (${openSpins.length} Strafen ausstehend)</p>
     <p>• Laufende Darlehensverträge: ${myLoans.length} Vertrag/Verträge</p>
   </div>
@@ -2583,8 +2935,7 @@ function renderSubs() {
 
   // Sort subs by total tribute paid (ranking)
   const rankedSubs = [...active].map(s => {
-    const totalPaid = payments.filter(p => p.subId === s.id || p.paidBy === s.username)
-      .reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
+    const totalPaid = getSubTotalPaid(s.id, s.username);
     return { sub: s, totalPaid };
   }).sort((a, b) => b.totalPaid - a.totalPaid);
 
@@ -2602,21 +2953,21 @@ function renderSubs() {
     else if (rankIdx === 1 && totalPaid > 0) { rankBadge = '🥈 SILBER-SCHWEIN'; rankColor = '#c0c0c0'; }
     else if (totalPaid > 100) { rankBadge = '🥉 ERTRAGREICHE SAU'; rankColor = '#cd7f32'; }
 
-    // Calculate open debts for this sub
-    const openFTs = fagTaxes.filter(f => f.subId === s.id && !f.paid);
-    const openFTTotal = openFTs.reduce((sum, f) => sum + (f.totalAmount || 0), 0);
+    // Calculate open debts for this sub centrally
+    const openFTs = fagTaxes.filter(f => (f.subId === s.id || f.username === s.username) && !f.paid);
+    const openFTTotal = openFTs.reduce((sum, f) => sum + (f.totalAmount || f.baseAmount || 0), 0);
     const openSpins = wheelSpins.filter(w => (w.subId === s.id || w.username === s.username) && !w.paid);
-    const openSpinsTotal = openSpins.reduce((sum, w) => sum + (w.prizeAmount || 0), 0);
-    const totalDebt = openFTTotal + openSpinsTotal;
+    const openSpinsTotal = openSpins.reduce((sum, w) => sum + (w.prizeAmount || 0) + ((w.mahnStufe || 0) * 5), 0);
+    const totalDebt = getSubOpenDebt(s.id, s.username);
 
     if (isEditing) {
       return `<div class="sub-edit-row" data-id="${s.id}" style="padding:12px;background:var(--bg-surface);border:1px solid var(--border);border-radius:4px;margin-bottom:10px">
         <div class="sub-edit-fields" style="display:flex;flex-direction:column;gap:6px">
-          <input type="text" class="sub-edit-user" value="${escapeHtml(s.username)}" placeholder="Benutzername" style="padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text)">
-          <input type="text" class="sub-edit-name" value="${escapeHtml(s.displayName || s.username)}" placeholder="Anzeigename" style="padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text)">
-          <input type="text" class="sub-edit-pw" value="${escapeHtml(s.password || '')}" placeholder="Passwort" style="padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text)">
+          <input type="text" class="sub-edit-user" value="${escapeHtml(s.username)}" placeholder="Benutzername" style="padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);width:100%">
+          <input type="text" class="sub-edit-name" value="${escapeHtml(s.displayName || s.username)}" placeholder="Anzeigename" style="padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);width:100%">
+          <input type="text" class="sub-edit-pw" value="${escapeHtml(s.password || '')}" placeholder="Passwort" style="padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);width:100%">
         </div>
-        <div class="sub-edit-actions" style="margin-top:8px;display:flex;gap:6px">
+        <div class="sub-edit-actions form-action-row" style="margin-top:8px">
           <button class="btn btn--sm btn--success" data-id="${s.id}">💾 SPEICHERN</button>
           <button class="btn btn--sm btn--ghost">✕ ABBRECHEN</button>
         </div>
@@ -2848,6 +3199,7 @@ function renderFagTaxOverview() {
   }
 
   // --- LIVE Current Week ---
+  const activeSubs = subs.filter(s => s.active !== false && s.fagTax && s.fagTax.enabled !== false);
   if (activeSubs.length > 0) {
     const kw = getKW(weekStart);
     const weekRangeStr = formatWeekRange(weekStart);
@@ -3179,6 +3531,15 @@ function formatDuration(totalSecs) {
 function renderSubFagTaxView() {
   if (currentUser.role !== 'sub') return;
 
+  // If unlocked, render counters view instead of locking again
+  if (isAccountCheckedThisWeek()) {
+    if (lastCheckSessions === null) lastCheckSessions = sessions;
+    renderSubFagTaxCounters();
+    renderSubFagTaxHistory();
+    renderSubFagTaxInvoices();
+    return;
+  }
+
   // Remove old counter UI if it exists
   const oldUI = $('sub-fagtax-ui');
   if (oldUI) oldUI.remove();
@@ -3405,16 +3766,15 @@ function renderSubFagTaxCounters() {
   if (!sub) return;
   const cfg = getSubFagConfig(sub);
 
-  // #18: Use lastCheckSessions instead of window.__ftSessions
+  // Use real-time sessions if available, falling back to lastCheckSessions
   const weekStart = getCurrentWeekStart();
+  const rawSessions = (sessions && sessions.length > 0) ? sessions : (lastCheckSessions || []);
   const subSessions = [];
-  if (lastCheckSessions) {
-    lastCheckSessions.forEach(s => {
-      if (s.loginTime && s.loginTime.seconds && s.loginTime.seconds * 1000 >= weekStart.getTime()) {
-        subSessions.push(s);
-      }
-    });
-  }
+  rawSessions.forEach(s => {
+    if (s.subId === currentUser.uid && s.loginTime && toMs(s.loginTime) >= weekStart.getTime()) {
+      subSessions.push(s);
+    }
+  });
 
   // #9: Use central calculation function
   const calc = calculateWeeklyFagTax(sub, weekStart, subSessions, payments, accountChecks, { includeLiveSeconds: true });
@@ -3492,13 +3852,17 @@ function renderSubFagTaxCounters() {
   const baseLoginCost = calc.loginCost;
   const baseTaxAmount = calc.taxAmount;
   const baseCheckCost = calc.checkCost;
+  const tickerStartMs = Date.now();
+  const initialLiveSecs = cfg.minutesEnabled !== false ? getLiveSessionSeconds() : 0;
+
   liveInterval = setInterval(() => {
     const timeEl = $('ft-live-time');
     const costEl = $('ft-live-cost');
     const totalEl = $('ft-live-total');
     if (!timeEl) { clearInterval(liveInterval); liveInterval = null; return; }
 
-    const liveSecs = cfg.minutesEnabled ? getLiveSessionSeconds() : 0;
+    const wallClockAdded = Math.floor((Date.now() - tickerStartMs) / 1000);
+    const liveSecs = cfg.minutesEnabled !== false ? (initialLiveSecs + wallClockAdded) : 0;
     const total = closedSecs + liveSecs;
     const timeVal = formatDuration(total);
     const timeCostVal = round2(total * perSec);
@@ -3924,19 +4288,20 @@ function renderDomFagTaxInvoices() {
     const kw = getKW(ws);
     const range = formatWeekRange(ws);
     const total = ft.totalAmount || 0;
+    const paidAmt = ft.totalWithInterest || total;
     const sub = subs.find(s => s.id === ft.subId);
     const subName = sub ? (sub.displayName || sub.username) : ft.username;
     
     const paidBadge = ft.paid 
-      ? '<span style="color:var(--green);font-weight:700">✓ BEZAHLT</span>'
+      ? `<span style="color:var(--green);font-weight:700">✓ BEZAHLT (${paidAmt.toFixed(2).replace('.', ',')}€)</span>`
       : '<span style="color:var(--red);font-weight:700">🔥 OFFEN</span>';
       
     return `<div style="display:flex;justify-content:space-between;align-items:center;padding:12px;background:var(--bg-surface);border:1px solid var(--border);margin-bottom:8px;border-radius:4px;gap:12px;flex-wrap:wrap">
       <div>
         <div style="font-weight:800;font-size:0.9rem">🐷 ${escapeHtml(subName)}: RECHNUNG KW ${kw} (${range})</div>
-        <div style="font-size:0.75rem;color:var(--text-dim);margin-top:2px">Gesamtbetrag: <strong style="color:var(--red)">${total.toFixed(2).replace('.', ',')}€</strong> • Status: ${paidBadge}</div>
+        <div style="font-size:0.75rem;color:var(--text-dim);margin-top:2px">Rechnungsbetrag: <strong style="color:var(--red)">${total.toFixed(2).replace('.', ',')}€</strong> • Status: ${paidBadge}</div>
       </div>
-      <div style="display:flex; gap: 8px;">
+      <div class="card-actions-responsive">
         ${ft.paid ? '' : `<button class="btn btn--sm btn--success btn-mark-ft-paid" data-ftid="${ft.id}" data-subid="${ft.subId}" data-amt="${total}" data-kw="${kw}">✓ ALS BEZAHLT MARKIEREN</button>`}
         <button class="btn btn--sm btn--cyan btn-download-dom-pdf" data-ftid="${ft.id}">📄 PDF</button>
       </div>
@@ -3944,12 +4309,14 @@ function renderDomFagTaxInvoices() {
   }).join('');
 
   qsa('.btn-mark-ft-paid').forEach(btn => {
-    btn.onclick = () => {
-      openManualPaymentModal(btn.dataset.subid, 'fagtax', `FagTax Rechnung KW ${btn.dataset.kw} bezahlt`, btn.dataset.amt);
-      db.collection('fagTaxes').doc(btn.dataset.ftid).update({
-        paid: true,
-        paidAt: firebase.firestore.FieldValue.serverTimestamp()
-      });
+    btn.onclick = async () => {
+      const ft = fagTaxes.find(f => f.id === btn.dataset.ftid);
+      if (ft) {
+        await settleAllFagTaxPositions(ft, new Date(), 0, parseFloat(btn.dataset.amt) || ft.totalAmount || 0, btn.dataset.kw);
+        showToast(`Facto-Rechnung KW ${btn.dataset.kw} & alle enthaltenen Forderungen als bezahlt markiert!`, 'success');
+      } else {
+        openManualPaymentModal(btn.dataset.subid, 'fagtax', `FagTax Rechnung KW ${btn.dataset.kw} bezahlt`, btn.dataset.amt);
+      }
     };
   });
 
@@ -3981,15 +4348,18 @@ function renderSubFagTaxInvoices() {
     const kw = getKW(ws);
     const range = formatWeekRange(ws);
     const total = ft.totalAmount || 0;
+    const paidAmt = ft.totalWithInterest || total;
     const paidBadge = ft.paid 
-      ? '<span style="color:var(--green);font-weight:700">✓ BEZAHLT</span>'
+      ? `<span style="color:var(--green);font-weight:700">✓ BEZAHLT (${paidAmt.toFixed(2).replace('.', ',')}€)</span>`
       : '<span style="color:var(--red);font-weight:700">🔥 OFFEN</span>';
     return `<div style="display:flex;justify-content:space-between;align-items:center;padding:12px;background:var(--bg-surface);border:1px solid var(--border);margin-bottom:8px;border-radius:4px;gap:12px;flex-wrap:wrap">
       <div>
         <div style="font-weight:800;font-size:0.9rem">FAG-TAX RECHNUNG KW ${kw} (${range})</div>
-        <div style="font-size:0.75rem;color:var(--text-dim);margin-top:2px">Gesamtbetrag: <strong style="color:var(--red)">${total.toFixed(2).replace('.', ',')}€</strong> • Status: ${paidBadge}</div>
+        <div style="font-size:0.75rem;color:var(--text-dim);margin-top:2px">Rechnungsbetrag: <strong style="color:var(--red)">${total.toFixed(2).replace('.', ',')}€</strong> • Status: ${paidBadge}</div>
       </div>
-      <button class="btn btn--sm btn--cyan btn-download-sub-pdf" data-ftid="${ft.id}">📄 RECHNUNG ALS PDF HERUNTERLADEN</button>
+      <div class="card-actions-responsive">
+        <button class="btn btn--sm btn--cyan btn-download-sub-pdf" data-ftid="${ft.id}">📄 RECHNUNG ALS PDF HERUNTERLADEN</button>
+      </div>
     </div>`;
   }).join('');
 
@@ -4008,7 +4378,10 @@ function openLoanContractModal() {
   const subName = currentUser.displayName || currentUser.username;
   const bodyHTML = `
     <form id="loan-wizard-form" style="display:flex;flex-direction:column;gap:12px">
-      <p style="font-size:0.8rem;color:var(--text-secondary)">Wähle den Darlehensbetrag, deine Zahlungsmodalitäten und bestätige die Bedingungen.</p>
+      <div style="background:rgba(255,23,68,0.1);border-left:4px solid var(--red);padding:8px 12px;font-size:0.75rem;color:var(--text-secondary)">
+        <strong style="color:var(--red)">RECHTSHINWEIS & SCHULDANERKENNTNIS (§ 781 BGB):</strong><br>
+        Durch den Abschluss dieses Vertrages unterwirfst du dich bedingungslos dem Darlehensvertrag sowie der sofortigen Zwangsvollstreckung und Gehaltsabtretung.
+      </div>
       
       <div>
         <label style="font-size:0.7rem;color:var(--text-dim);font-weight:700">1. DARLEHENSBETRAG WÄHLEN (€)</label>
@@ -4040,115 +4413,139 @@ function openLoanContractModal() {
       </div>
 
       <div>
-        <label style="font-size:0.7rem;color:var(--text-dim);font-weight:700">4. ZUSATZOPTIONEN & GEBÜHREN</label>
+        <label style="font-size:0.7rem;color:var(--text-dim);font-weight:700">4. DEVOTIONS-ZUSATZOPTIONEN & GEBÜHREN</label>
         <div style="display:flex;flex-direction:column;gap:6px;margin-top:4px">
-          <label style="display:flex;align-items:center;gap:6px;font-size:0.75rem"><input type="checkbox" class="loan-addon" data-title="Erinnerungsbrief per Post" data-cost="49.99"> 📨 Erinnerungsbrief per Post (+49,99€)</label>
-          <label style="display:flex;align-items:center;gap:6px;font-size:0.75rem"><input type="checkbox" class="loan-addon" data-title="Express-Bearbeitungsgebühr" data-cost="29.99" checked> ⚡ Express-Bearbeitungsgebühr (+29,99€)</label>
-          <label style="display:flex;align-items:center;gap:6px;font-size:0.75rem"><input type="checkbox" class="loan-addon" data-title="Kaufvertrag-Absicherungsstrafe" data-cost="99.99"> 🛡 Kaufvertrag-Absicherungsstrafe (+99,99€)</label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:0.75rem"><input type="checkbox" class="loan-addon" data-title="Devotions-Bearbeitungsgebühr" data-cost="34.99" checked> 📜 Devotions-Bearbeitungsgebühr (+34,99€)</label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:0.75rem"><input type="checkbox" class="loan-addon" data-title="Express-Auszahlungs & Hörigkeitsaufschlag" data-cost="49.99" checked> ⚡ Express-Auszahlungs & Hörigkeitsaufschlag (+49,99€)</label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:0.75rem"><input type="checkbox" class="loan-addon" data-title="Insolvenz-Absicherungsstrafe" data-cost="99.99"> 🛡 Insolvenz-Absicherungsstrafe (+99,99€)</label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:0.75rem"><input type="checkbox" class="loan-addon" data-title="Schuldner-Pranger-Gebühr" data-cost="29.99"> 🔔 Schuldner-Pranger-Gebühr (+29,99€)</label>
         </div>
       </div>
 
       <div>
-        <label style="font-size:0.7rem;color:var(--text-dim);font-weight:700">5. DARLEHENSNEHMER DATEN</label>
-        <input type="text" id="loan-fullname" value="${escapeHtml(subName)}" placeholder="Vollständiger Vor- und Nachname" required style="width:100%;padding:8px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);margin-top:4px">
+        <label style="font-size:0.7rem;color:var(--text-dim);font-weight:700">5. DARLEHENSNEHMER PERSONALDHALT & IBAN</label>
+        <input type="text" id="loan-fullname" value="${escapeHtml(subName)}" placeholder="Vollständiger Vor- und Nachname (Personalausweis)" required style="width:100%;padding:8px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);margin-top:4px">
         <input type="text" id="loan-address" placeholder="Strasse, Hausnr, PLZ, Ort" required style="width:100%;padding:8px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);margin-top:4px">
-        <input type="text" id="loan-iban" placeholder="DE00 0000 0000 0000 0000 00 (IBAN für Einzug)" required style="width:100%;padding:8px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);margin-top:4px">
+        <input type="text" id="loan-iban" placeholder="DE00 0000 0000 0000 0000 00 (IBAN für Lohn- & Sachpfändung)" required style="width:100%;padding:8px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);margin-top:4px">
       </div>
 
-      <div style="padding:10px;background:#2a0000;border:1px solid var(--red);margin-top:6px">
-        <label style="display:flex;align-items:flex-start;gap:8px;font-size:0.75rem;color:#fff;cursor:pointer">
+      <div style="padding:10px;background:#2a0000;border:1px solid var(--red);margin-top:6px;display:flex;flex-direction:column;gap:6px">
+        <label style="display:flex;align-items:flex-start;gap:8px;font-size:0.72rem;color:#fff;cursor:pointer">
+          <input type="checkbox" id="loan-schuld-agree" required style="margin-top:2px">
+          <span><strong>§ 781 BGB ABSTRAKTES SCHULDANERKENNTNIS:</strong> Ich anerkenne hiermit unwiderruflich und konstitutiv die obige Gesamtschuldsumme nebst wöchentlicher Zinsen als persönliche Verbindlichkeit gegenüber dem HERRN.</span>
+        </label>
+        <label style="display:flex;align-items:flex-start;gap:8px;font-size:0.72rem;color:#fff;cursor:pointer">
+          <input type="checkbox" id="loan-abtretung-agree" required style="margin-top:2px">
+          <span><strong>§ 398 BGB GEHALTSABTRETUNG:</strong> Ich trete hiermit für den Fall des Zahlungsverzugs meinen pfändbaren Teil des Gegenwärtigen und zukünftigen Arbeitseinkommens sowie etwaige Sachwerte unwiderruflich an den Gläubiger ab.</span>
+        </label>
+        <label style="display:flex;align-items:flex-start;gap:8px;font-size:0.72rem;color:#fff;cursor:pointer">
           <input type="checkbox" id="loan-inkasso-agree" required style="margin-top:2px">
-          <span><strong>VERBINDLICHE ANERKENNUNG:</strong> Ich bestätige hiermit rechtsverbindlich, dass bei Nichtbezahlung oder Zahlungsverzug (ab Tag 1) die gesamte Restforderung kostenpflichtig an ein Inkassounternehmen übergeben wird.</span>
+          <span><strong>SOFORTIGE INKASSO-ÜBERMITTLUNG (§ 794 ZPO):</strong> Ich willige ein, dass bei Verzug ab Tag 1 die Forderung sofort und kostenpflichtig an ein Inkassosyndikat zum Forderungsverkauf übergeben werden darf.</span>
         </label>
       </div>
     </form>
   `;
 
   showModal('📜 DARLEHENSVERTRAG ABSCHLIESSEN', bodyHTML, 'VERTRAG JETZT ABSCHLIESSEN', async () => {
-    const amtInput = document.getElementById('loan-amount-input');
-    const rhythmInput = document.getElementById('loan-rhythm');
-    const rateInput = document.getElementById('loan-rate-input');
-    const nameInput = document.getElementById('loan-fullname');
-    const addressInput = document.getElementById('loan-address');
-    const ibanInput = document.getElementById('loan-iban');
-    const agreeInput = document.getElementById('loan-inkasso-agree');
-
-    if (!amtInput || !nameInput || !addressInput || !agreeInput) {
-      console.warn('Form fields missing during submission');
-      return false;
-    }
-
-    const amt = parseFloat(amtInput.value) || 0;
-    const rhythm = rhythmInput ? rhythmInput.value : 'weekly';
-    const rate = parseFloat(rateInput ? rateInput.value : 0) || 0;
-    const name = nameInput.value.trim();
-    const address = addressInput.value.trim();
-    const iban = ibanInput ? ibanInput.value.trim() : '';
-    const agree = agreeInput.checked;
-
-    if (!agree || !name || !address || amt <= 0) {
-      showAlert('FEHLER', 'Bitte fülle alle Pflichtfelder aus (Name, Adresse, Betrag > 0) und akzeptiere die Inkasso-Vereinbarung.');
-      return false;
-    }
-
-    let addonsSum = 0;
-    const addons = [];
-    qsa('.loan-addon:checked').forEach(cb => {
-      const c = parseFloat(cb.dataset.cost) || 0;
-      addonsSum += c;
-      addons.push({ title: cb.dataset.title, cost: c });
-    });
-
-    const weeklyInterest = round2(amt * 0.10);
-    const curSubId = currentUser.id || currentUser.uid || 'sub';
-    const contractData = {
-      subId: curSubId,
-      username: currentUser.username || 'sub',
-      displayName: name,
-      address, iban,
-      principal: amt,
-      weeklyInterestRate: 0.10,
-      weeklyInterestAmount: weeklyInterest,
-      rhythm,
-      installmentRate: rate,
-      addons,
-      addonsSum,
-      inkassoAgreed: true,
-      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-      status: 'active'
-    };
-
-    let refId = 'lnc_' + Date.now();
     try {
-      if (db) {
-        const ref = await db.collection('loanContracts').add(contractData);
-        refId = ref.id;
+      const amtInput = document.getElementById('loan-amount-input');
+      const rhythmInput = document.getElementById('loan-rhythm');
+      const rateInput = document.getElementById('loan-rate-input');
+      const nameInput = document.getElementById('loan-fullname');
+      const addressInput = document.getElementById('loan-address');
+      const ibanInput = document.getElementById('loan-iban');
+      const agreeSchuld = document.getElementById('loan-schuld-agree');
+      const agreeAbtretung = document.getElementById('loan-abtretung-agree');
+      const agreeInkasso = document.getElementById('loan-inkasso-agree');
+
+      if (!amtInput || !nameInput || !addressInput || !agreeInkasso) {
+        console.warn('Form fields missing during submission');
+        return false;
       }
-    } catch (e) {
-      console.error('Firestore loanContracts write error:', e);
-    }
 
-    // Always append locally to ensure UI updates immediately
-    const fullContract = { id: refId, ...contractData };
-    if (!loanContracts.some(l => l.id === refId)) {
-      loanContracts.push(fullContract);
-    }
+      const amt = parseFloat(amtInput.value) || 0;
+      const rhythm = rhythmInput ? rhythmInput.value : 'weekly';
+      const rate = parseFloat(rateInput ? rateInput.value : 0) || 0;
+      const name = nameInput.value.trim();
+      const address = addressInput.value.trim();
+      const iban = ibanInput ? ibanInput.value.trim() : '';
 
-    // Dual-sync to sub document to bypass collection rule restrictions
-    if (curSubId && db) {
-      db.collection('subs').doc(curSubId).set({
-        loanContractsArr: firebase.firestore.FieldValue.arrayUnion(fullContract)
-      }, { merge: true }).catch(() => {});
-    }
+      if (!agreeSchuld?.checked || !agreeAbtretung?.checked || !agreeInkasso?.checked || !name || !address || amt <= 0) {
+        showAlert('FEHLER', 'Bitte fülle alle Pflichtfelder aus und akzeptiere alle 3 Rechts- & Abtretungsklauseln (§ 781, § 398 BGB, § 794 ZPO).');
+        return false;
+      }
 
-    showToast('Darlehensvertrag erfolgreich abgeschlossen! 📜', 'success');
-    if (currentUser.role === 'dom') renderDomLoansOverview();
-    else renderSubLoansView();
+      let addonsSum = 0;
+      const addons = [];
+      qsa('.loan-addon:checked').forEach(cb => {
+        const c = parseFloat(cb.dataset.cost) || 0;
+        addonsSum += c;
+        addons.push({ title: cb.dataset.title, cost: c });
+      });
 
-    try {
-      generateLoanContractPDF(fullContract);
-    } catch (pdfErr) {
-      console.warn('PDF generation notice:', pdfErr);
+      const weeklyInterest = round2(amt * 0.10);
+      const curSubId = currentUser.id || currentUser.uid || 'sub';
+      const contractData = {
+        subId: curSubId,
+        username: currentUser.username || 'sub',
+        displayName: name,
+        address, iban,
+        principal: amt,
+        weeklyInterestRate: 0.10,
+        weeklyInterestAmount: weeklyInterest,
+        rhythm,
+        installmentRate: rate,
+        addons,
+        addonsSum,
+        schuldAnerkannt: true,
+        abtretungAgreed: true,
+        inkassoAgreed: true,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+        status: 'active'
+      };
+
+      let refId = 'lnc_' + Date.now();
+      try {
+        if (db) {
+          const ref = await db.collection('loanContracts').add(contractData);
+          refId = ref.id;
+        }
+      } catch (e) {
+        console.error('Firestore loanContracts write error:', e);
+      }
+
+      // Always append locally to ensure UI updates immediately
+      const fullContract = { id: refId, ...contractData };
+      if (!loanContracts.some(l => l.id === refId)) {
+        loanContracts.push(fullContract);
+      }
+
+      // Dual-sync to sub document to bypass collection rule restrictions
+      if (curSubId && db) {
+        db.collection('subs').doc(curSubId).set({
+          loanContractsArr: firebase.firestore.FieldValue.arrayUnion(fullContract)
+        }, { merge: true }).catch(() => {});
+      }
+
+      hideModal();
+
+      showToast('Darlehensvertrag & Schuldanerkenntnis unterzeichnet! 📜', 'success');
+      if (currentUser.role === 'dom') renderDomLoansOverview();
+      else renderSubLoansView();
+
+      setTimeout(() => {
+        try {
+          generateLoanContractPDF(fullContract);
+        } catch (pdfErr) {
+          console.warn('PDF generation notice:', pdfErr);
+        }
+      }, 100);
+
+      return true;
+    } catch (err) {
+      console.error('Error in openLoanContractModal:', err);
+      showAlert('FEHLER', 'Fehler beim Abschließen des Darlehensvertrags: ' + (err.message || err));
+      return false;
     }
   });
 
@@ -4177,66 +4574,103 @@ function openLoanContractModal() {
 function generateLoanContractPDF(c) {
   const contractId = (c.id || 'NEU').slice(0, 8).toUpperCase();
   const subName = c.displayName || c.username;
-  const grandTotal = (c.principal || 0) + (c.addonsSum || 0);
+  const principal = c.principal || 0;
+  const addonsSum = c.addonsSum || 0;
+  const grandTotal = principal + addonsSum;
+  const weeklyInterest = c.weeklyInterestAmount || (principal * 0.10);
+  const rate = c.installmentRate || 25;
 
   const html = `<!DOCTYPE html>
 <html lang="de"><head><meta charset="UTF-8"><title>DARLEHENSVERTRAG ${contractId}</title>
 <style>
-  @page { margin: 12mm 15mm; size: A4; }
-  body { font-family: 'Courier New', monospace; font-size: 9pt; line-height: 1.4; color: #000; padding: 20px; }
-  .header { text-align: center; border-bottom: 2px solid #000; padding-bottom: 10px; margin-bottom: 15px; }
-  .header h1 { font-size: 16pt; text-transform: uppercase; letter-spacing: 4px; }
-  .section { margin-bottom: 12px; padding: 10px; border: 1px solid #ccc; }
-  .title { font-weight: bold; background: #eee; padding: 4px; text-transform: uppercase; }
-  .highlight { color: #cc0000; font-weight: bold; }
-  .signature-box { margin-top: 30px; display: flex; justify-content: space-between; }
-  .sig { border-top: 1px solid #000; width: 45%; text-align: center; padding-top: 4px; font-size: 8pt; }
+  @page { margin: 15mm; size: A4; }
+  body { font-family: 'Times New Roman', Times, serif; font-size: 10pt; line-height: 1.4; color: #111; padding: 20px; }
+  .header { text-align: center; border-bottom: 2px solid #000; padding-bottom: 12px; margin-bottom: 18px; }
+  .header h1 { font-size: 16pt; text-transform: uppercase; letter-spacing: 1px; margin: 0 0 4px 0; font-weight: bold; }
+  .header p { font-size: 9pt; color: #444; margin: 2px 0; }
+  .section { margin-bottom: 14px; padding: 10px 12px; border: 1px solid #ccc; background: #fff; }
+  .title { font-weight: bold; background: #f0f0f0; padding: 4px 8px; text-transform: uppercase; font-size: 9.5pt; border-bottom: 1px solid #ccc; margin: -10px -12px 10px -12px; }
+  .highlight { color: #880000; font-weight: bold; }
+  .signature-box { margin-top: 35px; display: flex; justify-content: space-between; }
+  .sig { border-top: 1px solid #000; width: 42%; text-align: center; padding-top: 5px; font-size: 8.5pt; }
+  .stamp { border: 2px dashed #880000; color: #880000; font-weight: bold; display: inline-block; padding: 6px 10px; transform: rotate(-2deg); text-align: center; float: right; margin-top: -5px; font-size: 8pt; }
+  table { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 9pt; }
+  th, td { border: 1px solid #ddd; padding: 5px 8px; text-align: left; }
+  th { background: #f5f5f5; font-weight: bold; }
 </style></head><body>
+  <div class="stamp">OFFIZIELLER VERTRAG<br>GEMÄSS § 488 BGB</div>
   <div class="header">
-    <h1>${SVG_PDF_ICONS.document} RECHTSVERBINDLICHER DARLEHENSVERTRAG</h1>
-    <p>Vertrags-ID: <strong>LNC-${contractId}</strong></p>
+    <h1>DARLEHENSVERTRAG & SCHULDANERKENNTNIS</h1>
+    <p>Vertragsnummer: <strong>LNC-${contractId}</strong> • Aktenzeichen: DAR-2026-${Math.floor(10000 + Math.random() * 90000)}</p>
+    <p>Geregelt nach den Bestimmungen des Bürgerlichen Gesetzbuches (BGB)</p>
   </div>
 
   <div class="section">
-    <div class="title">1. VERTRAGSPARTNER</div>
-    <p><strong>Darlehensgeber:</strong> HERR (Gebieter & Gläubiger)</p>
-    <p><strong>Darlehensnehmer (Schuldner):</strong> ${escapeHtml(subName)}</p>
-    <p>Adresse: ${escapeHtml(c.address || '—')}</p>
-    <p>IBAN: ${escapeHtml(c.iban || '—')}</p>
+    <div class="title">§ 1 VERTRAGSPARTNER</div>
+    <p>Zwischen <strong>HERR (Gebieter & Gläubiger)</strong> – nachfolgend <em>Darlehensgeber</em> genannt –</p>
+    <p>und <strong>${escapeHtml(subName)}</strong> – nachfolgend <em>Darlehensnehmer</em> genannt –</p>
+    <p>Anschrift des Darlehensnehmers: ${escapeHtml(c.address || '—')}</p>
+    <p>Hinterlegte Bankverbindung (IBAN): ${escapeHtml(c.iban || '—')}</p>
   </div>
 
   <div class="section">
-    <div class="title">2. DARLEHENSSUMME & GEBÜHREN</div>
-    <p>Nennbetrag Darlehen: <strong>${(c.principal || 0).toFixed(2).replace('.', ',')}€</strong></p>
-    <p>Wochenzins (10%/Woche): <strong>${(c.weeklyInterestAmount || 0).toFixed(2).replace('.', ',')}€ / Woche</strong></p>
-    ${(c.addons || []).map(a => `<p>Gebühr (${escapeHtml(a.title)}): ${(a.cost || 0).toFixed(2).replace('.', ',')}€</p>`).join('')}
-    <hr style="margin:6px 0">
-    <p class="highlight">GESAMTE START-SCHULDSUMME: ${grandTotal.toFixed(2).replace('.', ',')}€</p>
+    <div class="title">§ 2 DARLEHENSBETRAG, GEBÜHREN & GESAMTFORDERUNG</div>
+    <table>
+      <tr><th>Position</th><th>Betrag (€)</th></tr>
+      <tr><td>Nennbetrag Darlehen (Hauptforderung)</td><td>${principal.toFixed(2).replace('.', ',')} €</td></tr>
+      ${(c.addons || []).map(a => `<tr><td>Gebühr (${escapeHtml(a.title)})</td><td>${(a.cost || 0).toFixed(2).replace('.', ',')} €</td></tr>`).join('')}
+      <tr><td><strong>Initiale Netto-Gesamtschuld</strong></td><td><strong>${grandTotal.toFixed(2).replace('.', ',')} €</strong></td></tr>
+    </table>
   </div>
 
   <div class="section">
-    <div class="title">3. RATENZAHLUNG & FRISTEN</div>
-    <p>Ratenrhythmus: <strong>${c.rhythm === 'weekly' ? 'Wöchentlich (Freitags)' : 'Monatlich'}</strong></p>
-    <p>Ratenhöhe: <strong>${(c.installmentRate || 0).toFixed(2).replace('.', ',')}€</strong></p>
+    <div class="title">§ 3 ZINSEN, RATENZAHLUNG & TILGUNGSPLAN</div>
+    <p>1. <strong>Verzinsung:</strong> Das Darlehen wird mit einem vertraglichen Wochenzins von <strong>10,00 % pro Woche</strong> (${weeklyInterest.toFixed(2).replace('.', ',')} € / Woche) verzinst.</p>
+    <p>2. <strong>Ratenvereinbarung:</strong> Die vereinbarte regelmäßige Ratenzahlung beträgt <strong>${rate.toFixed(2).replace('.', ',')} €</strong> (Rhythmus: ${c.rhythm === 'weekly' ? 'Wöchentlich jeweils freitags' : 'Monatlich'}).</p>
+    <p>3. <strong>Transparente Schuldentilgung:</strong> Jede geleistete Zahlung verringert umgehend die verbleibende Restschuld. Sobald die Gesamtschuld nebst Zinsen auf 0,00 € getilgt ist, erlischt dieser Vertrag vollumfänglich und der Darlehensnehmer ist vollständig schuldenfrei.</p>
   </div>
 
-  <div class="section" style="border: 2px solid #cc0000; background: #fff5f5;">
-    <div class="title" style="background:#cc0000;color:#fff">4. INKASSO- & VOLLSTRECKUNGSKLAUSEL</div>
-    <p class="highlight">DER SCHULDNER ERKLÄRT SICH BEDINGUNGSLOS DAMIT EINVERSTANDEN, DASS BEI ZAHLUNGSVERZUG AB DEM 1. TAG DIE GESAMTFORDERUNG RECHTSWIRKSAM AN EIN INKASSOUNTERNEHMEN ZUR GERICHTLICHEN EINTREIBUNG ÜBERGEBEN WIRD.</p>
+  <div class="section">
+    <div class="title">§ 4 CONSTITUTIVES SCHULDANERKENNTNIS (§ 781 BGB) & ABTRETUNG (§ 398 BGB)</div>
+    <p>1. Der Darlehensnehmer erkennt hiermit ausdrücklich und unwiderruflich an, dem Darlehensgeber den Gesamtbetrag gemäß § 2 nebst den vereinbarten Zinsen zu schulden.</p>
+    <p>2. Zur Sicherung der Rückzahlung tritt der Darlehensnehmer für den Fall eines Zahlungsverzugs seine Ansprüche auf Arbeitseinkommen in pfändbarer Höhe an den Darlehensgeber ab.</p>
+  </div>
+
+  <div class="section" style="border: 1px solid #880000; background: #fffdfd;">
+    <div class="title" style="background:#880000;color:#fff">§ 5 VERZUG & RECHTSFOLGEN</div>
+    <p class="highlight">Bei Zahlungsverzug ist der Darlehensgeber berechtigt, das Mahnverfahren einzuleiten und die Forderung nach den gesetzlichen Bestimmungen geltend zu machen. Bei ordnungsgemäßer Erfüllung der Ratenzahlungen verbleibt der Vertrag im regulären Tilgungsstatus.</p>
   </div>
 
   <div class="signature-box">
-    <div class="sig">${SVG_PDF_ICONS.crown} HERR (Darlehensgeber)</div>
-    <div class="sig">${SVG_PDF_ICONS.user} ${escapeHtml(subName)} (Darlehensnehmer)</div>
+    <div class="sig">${SVG_PDF_ICONS.crown}<br>HERR (Darlehensgeber)</div>
+    <div class="sig">${SVG_PDF_ICONS.user}<br>${escapeHtml(subName)} (Darlehensnehmer)<br><span style="font-size:7pt;color:#666">[Elektronisch unterzeichnet & bestätigt]</span></div>
   </div>
 </body></html>`;
 
-  const w = window.open('', '_blank');
-  if (w) { w.document.write(html); w.document.close(); }
+  try {
+    const w = window.open('', '_blank');
+    if (w && !w.closed) {
+      w.document.write(html);
+      w.document.close();
+    } else {
+      // Fallback for pop-up blocker
+      showModal('📜 DARLEHENSVERTRAG ' + contractId, `
+        <div style="max-height:55vh;overflow-y:auto;background:#fff;color:#000;padding:16px;border-radius:4px">
+          ${html.replace(/<!DOCTYPE html>[\s\S]*?<body[^>]*>/i, '').replace(/<\/body>[\s\S]*/i, '')}
+        </div>
+        <p style="font-size:0.75rem;color:var(--orange);margin-top:8px">💡 Tipp: Erlaube Pop-ups im Browser für automatisches Drucken.</p>
+      `, '📄 NEUES FENSTER ÖFFNEN', () => {
+        const win = window.open();
+        if (win) { win.document.write(html); win.document.close(); }
+      }, 'SCHLIESSEN');
+    }
+  } catch (e) {
+    console.warn('Window open fallback triggered:', e);
+  }
 }
 
 // --- DOM UNIFIED PAYMENT BOOKING (CUSTOM DATE, SUB & PURPOSE) ---
-function openManualPaymentModal(defaultSubId = '', defaultCategory = 'tribut', defaultDesc = '', defaultAmt = '') {
+function openManualPaymentModal(defaultSubId = '', defaultCategory = 'tribut', defaultDesc = '', defaultAmt = '', defaultLoanId = '') {
   const card = document.getElementById('payment-booking-card');
   if (card) {
     card.scrollIntoView({ behavior: 'smooth' });
@@ -4250,6 +4684,12 @@ function openManualPaymentModal(defaultSubId = '', defaultCategory = 'tribut', d
   if (defaultCategory && inputCategory) inputCategory.value = defaultCategory;
   if (defaultAmt && inputAmount) inputAmount.value = defaultAmt;
   if (defaultDesc && inputDescription) inputDescription.value = defaultDesc;
+
+  // Trigger loan dropdown update and select specified loan
+  updateLoanSelectVisibility();
+  if (defaultLoanId && inputLoan) {
+    inputLoan.value = defaultLoanId;
+  }
 
   const nowISO = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16);
   if (inputDate) inputDate.value = nowISO;
@@ -4402,7 +4842,7 @@ function renderDomWheelOverview() {
             Mahnstufe: ${sp.mahnStufe || 0} • Status: ${isPaid ? `<span style="color:var(--green);font-weight:700">✅ BEZAHLT am ${dateStr}</span>` : '<span style="color:var(--red);font-weight:700">🔥 OFFEN</span>'}
           </div>
         </div>
-        <div>
+        <div class="card-actions-responsive">
           ${isPaid ? '' : `<button class="btn btn--sm btn--success btn-mark-spin-paid" data-spinid="${sp.id}" data-subid="${sp.subId || ''}" data-amt="${sp.prizeAmount || 0}" data-title="${escapeHtml(sp.prizeTitle || '')}">✓ ALS BEZAHLT MARKIEREN</button>`}
         </div>
       </div>
@@ -4411,13 +4851,82 @@ function renderDomWheelOverview() {
 
   qsa('.btn-mark-spin-paid').forEach(btn => {
     btn.onclick = () => {
-      openManualPaymentModal(btn.dataset.subid, 'glücksrad', `Glücksrad Strafe Bezahlt: ${btn.dataset.title}`, btn.dataset.amt);
-      db.collection('wheelSpins').doc(btn.dataset.spinid).update({
-        paid: true,
-        paidAt: firebase.firestore.FieldValue.serverTimestamp()
-      }).catch(() => {});
+      const spinId = btn.dataset.spinid;
+      const subId = btn.dataset.subid;
+      const now = new Date();
+      openManualPaymentModal(subId, 'glücksrad', `Glücksrad Strafe Bezahlt: ${btn.dataset.title}`, btn.dataset.amt);
+      
+      const sp = wheelSpins.find(w => w.id === spinId);
+      if (sp) { sp.paid = true; sp.paidAt = now; }
+
+      if (db && spinId) {
+        db.collection('wheelSpins').doc(spinId).update({
+          paid: true,
+          paidAt: firebase.firestore.FieldValue.serverTimestamp()
+        }).catch(() => {});
+      }
+
+      if (db && subId) {
+        db.collection('subs').doc(subId).get().then(subDoc => {
+          if (subDoc.exists) {
+            const arr = subDoc.data().wheelSpinsArr || [];
+            let updated = false;
+            arr.forEach(w => {
+              if (w.id === spinId) { w.paid = true; w.paidAt = now.toISOString(); updated = true; }
+            });
+            if (updated) {
+              db.collection('subs').doc(subId).set({ wheelSpinsArr: arr }, { merge: true }).catch(() => {});
+            }
+          }
+        }).catch(() => {});
+      }
+      renderDomWheelOverview();
+      renderFagTaxOverview();
     };
   });
+}
+
+async function deleteLoanContract(loanId) {
+  const lc = loanContracts.find(l => l.id === loanId);
+  const subName = lc ? (lc.displayName || lc.username) : 'Sau';
+  const displayId = loanId.slice(0, 6).toUpperCase();
+
+  const confirmed = await showConfirm(
+    '🗑 DARLEHENSVERTRAG LÖSCHEN',
+    `Möchtest du den Darlehensvertrag #${displayId} von "${subName}" wirklich unwiderruflich löschen?`
+  );
+  if (!confirmed) return;
+
+  try {
+    if (db) {
+      await db.collection('loanContracts').doc(loanId).delete().catch(err => {
+        console.warn('Firestore loanContracts doc delete warning:', err);
+      });
+
+      if (lc && lc.subId) {
+        try {
+          const subDocRef = db.collection('subs').doc(lc.subId);
+          const subDoc = await subDocRef.get();
+          if (subDoc.exists) {
+            const arr = subDoc.data().loanContractsArr || [];
+            const updatedArr = arr.filter(item => item.id !== loanId);
+            await subDocRef.set({ loanContractsArr: updatedArr }, { merge: true });
+          }
+        } catch (subErr) {
+          console.warn('Sub document loanContractsArr update notice:', subErr);
+        }
+      }
+    }
+
+    loanContracts = loanContracts.filter(l => l.id !== loanId);
+
+    showToast(`Darlehensvertrag #${displayId} gelöscht!`, 'info');
+    if (currentUser && currentUser.role === 'dom') renderDomLoansOverview();
+    else renderSubLoansView();
+  } catch (e) {
+    console.error('Error deleting loan contract:', e);
+    showToast('Fehler beim Löschen des Darlehensvertrags', 'error');
+  }
 }
 
 function renderDomLoansOverview() {
@@ -4447,18 +4956,21 @@ function renderDomLoansOverview() {
     const startTotal = (lc.principal || 0) + (lc.addonsSum || 0);
     const remaining = Math.max(0, startTotal - totalPaid);
 
+    const isInkassoSold = lc.status === 'inkasso_sold';
     return `
-      <div style="padding:12px;background:var(--bg-surface);border:1px solid var(--border);margin-bottom:10px;border-radius:4px">
+      <div style="padding:12px;background:var(--bg-surface);border:1px solid ${isInkassoSold ? 'var(--red)' : 'var(--border)'};margin-bottom:10px;border-radius:4px">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">
           <div>
-            <div style="font-weight:900;color:var(--red);font-size:0.9rem">📜 Darlehen #${lc.id.slice(0,6)} — 🐷 ${escapeHtml(lc.displayName || lc.username)}</div>
+            <div style="font-weight:900;color:var(--red);font-size:0.9rem">📜 Darlehen #${lc.id.slice(0,6)} — 🐷 ${escapeHtml(lc.displayName || lc.username)} ${isInkassoSold ? '<span style="background:var(--red);color:#fff;padding:2px 6px;border-radius:3px;font-size:0.7rem">🔥 AN INKASSO VERKAUFT</span>' : ''}</div>
             <div style="font-size:0.75rem;color:var(--text-secondary);margin-top:2px">Nennbetrag: ${lc.principal}€ • Zinsen: ${lc.weeklyInterestAmount}€/Woche • Rate: ${lc.installmentRate}€</div>
             <div style="font-size:0.75rem;color:var(--purple);margin-top:2px;font-weight:700">Bereits getilgt: ${totalPaid.toFixed(2)}€ • Restbestand: <strong style="color:var(--red)">${remaining.toFixed(2)}€</strong></div>
-            <div style="font-size:0.7rem;color:var(--text-dim);margin-top:2px">IBAN: ${escapeHtml(lc.iban || '—')}</div>
+            <div style="font-size:0.7rem;color:var(--text-dim);margin-top:2px">IBAN: ${escapeHtml(lc.iban || '—')} • Abtretung (§ 398 BGB): ✓ Gültig</div>
           </div>
-          <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <div class="card-actions-responsive">
             <button class="btn btn--sm btn--primary btn-dom-loan-pay" data-subid="${lc.subId || ''}" data-lcid="${lc.id}" data-rate="${lc.installmentRate}">💳 RATENEINGANG BUCHEN</button>
-            <button class="btn btn--sm btn--cyan btn-download-loan-pdf" data-lcid="${lc.id}">📄 PDF</button>
+            <button class="btn btn--sm btn--cyan btn-download-loan-pdf" data-lcid="${lc.id}">📄 VERTRAG-PDF</button>
+            ${isInkassoSold ? `<button class="btn btn--sm btn--orange btn-download-inkasso-pdf" data-lcid="${lc.id}">⚡ INKASSO-BESCHEID PDF</button>` : `<button class="btn btn--sm btn--danger btn-sell-inkasso" data-lcid="${lc.id}" data-subid="${lc.subId || ''}" data-amt="${remaining}">⚖️ FORDERUNG AN INKASSO VERKAUFEN</button>`}
+            <button class="btn btn--sm btn--danger btn-delete-loan-contract" data-lcid="${lc.id}">🗑 LÖSCHEN</button>
           </div>
         </div>
       </div>
@@ -4467,7 +4979,7 @@ function renderDomLoansOverview() {
 
   qsa('.btn-dom-loan-pay').forEach(btn => {
     btn.onclick = () => {
-      openManualPaymentModal(btn.dataset.subid, 'darlehen', `Darlehens-Ratenzahlung #${btn.dataset.lcid.slice(0,6)}`, btn.dataset.rate);
+      openManualPaymentModal(btn.dataset.subid, 'darlehen', `Darlehens-Ratenzahlung #${btn.dataset.lcid.slice(0,6)}`, btn.dataset.rate, btn.dataset.lcid);
     };
   });
 
@@ -4477,6 +4989,104 @@ function renderDomLoansOverview() {
       if (lc) generateLoanContractPDF(lc);
     };
   });
+
+  qsa('.btn-sell-inkasso').forEach(btn => {
+    btn.onclick = () => sellLoanToInkasso(btn.dataset.lcid, btn.dataset.amt);
+  });
+
+  qsa('.btn-download-inkasso-pdf').forEach(btn => {
+    btn.onclick = () => {
+      const lc = loanContracts.find(l => l.id === btn.dataset.lcid);
+      if (lc) generateInkassoVollstreckungsBescheidPDF(lc);
+    };
+  });
+
+  qsa('.btn-delete-loan-contract').forEach(btn => {
+    btn.onclick = () => deleteLoanContract(btn.dataset.lcid);
+  });
+}
+
+async function sellLoanToInkasso(loanId, remainingAmt) {
+  const lc = loanContracts.find(l => l.id === loanId);
+  if (!lc) return;
+  const rem = parseFloat(remainingAmt) || 0;
+  const subName = lc.displayName || lc.username;
+
+  const confirmed = await showConfirm(
+    '⚖️ FORDERUNG AN INKASSO-SYNDIKAT VERKAUFEN',
+    `Möchtest du die offene Forderung von ${rem.toFixed(2)}€ von "${subName}" an das Inkasso-Syndikat verkaufen?\n\n- Die Schuldner-Forderung wird um 50% Inkasso-Aufschlag erhöht.\n- Es wird ein gerichtlicher Vollstreckungsbescheid generiert.`
+  );
+  if (!confirmed) return;
+
+  try {
+    const inkassoFee = round2(rem * 0.50);
+    const newTotalDebt = round2(rem + inkassoFee);
+
+    if (db) {
+      await db.collection('loanContracts').doc(loanId).update({
+        status: 'inkasso_sold',
+        inkassoSoldAt: firebase.firestore.FieldValue.serverTimestamp(),
+        inkassoFee,
+        inkassoTotalDebt: newTotalDebt
+      }).catch(() => {});
+    }
+
+    lc.status = 'inkasso_sold';
+    lc.inkassoFee = inkassoFee;
+    lc.inkassoTotalDebt = newTotalDebt;
+
+    showToast(`Darlehen #${loanId.slice(0,6)} erfolgreich an Inkasso verkauft! ⚖️`, 'success');
+    renderDomLoansOverview();
+    generateInkassoVollstreckungsBescheidPDF(lc);
+  } catch (e) {
+    console.error('Error selling loan to inkasso:', e);
+    showToast('Fehler beim Verkaufen der Forderung', 'error');
+  }
+}
+
+function generateInkassoVollstreckungsBescheidPDF(lc) {
+  const aktenzeichen = `INK-GER-${Math.floor(100000 + Math.random() * 900000)}`;
+  const subName = lc.displayName || lc.username;
+  const rem = lc.inkassoTotalDebt || ((lc.principal || 100) * 1.5);
+
+  const html = `<!DOCTYPE html>
+<html lang="de"><head><meta charset="UTF-8"><title>GERICHTLICHER VOLLSTRECKUNGSBESCHEID ${aktenzeichen}</title>
+<style>
+  @page { margin: 15mm; size: A4; }
+  body { font-family: 'Courier New', monospace; font-size: 9.5pt; line-height: 1.4; color: #000; padding: 20px; }
+  .header { border-bottom: 3px double #cc0000; padding-bottom: 10px; margin-bottom: 20px; text-align:center; }
+  .header h1 { color: #cc0000; font-size: 16pt; margin: 0 0 5px 0; text-transform:uppercase; letter-spacing:2px; }
+  .warning-box { border: 2px solid #cc0000; background: #fff0f0; padding: 12px; margin: 15px 0; font-weight: bold; }
+  .stamp { border: 3px double #cc0000; color: #cc0000; font-weight: bold; display: inline-block; padding: 6px 12px; transform: rotate(-5deg); text-align: center; float: right; }
+</style></head><body>
+  <div class="stamp">VOLLSTRECKBAR UMITTELBAR<br>FORDERUNGSKAUF BESTÄTIGT</div>
+  <div class="header">
+    <h1>DEUTSCHES INKASSO- & VOLLSTRECKUNGS-SYNDIKAT</h1>
+    <p>AMTILICHER GERICHTLICHER VOLLSTRECKUNGSBESCHEID BEI FORDERUNGSÜBERGANG (§ 398 BGB)</p>
+    <p>Aktenzeichen: <strong>${aktenzeichen}</strong> • Datum: ${new Date().toLocaleDateString('de-DE')}</p>
+  </div>
+
+  <p>An Antragsgegner / Schuldner: <strong>${escapeHtml(subName)}</strong></p>
+  <p>Anschrift: ${escapeHtml(lc.address || 'Schuldner-Adresse unbekannt')}</p>
+  <p>Gläubiger-Abtretender: <strong>HERR (Gebieter)</strong></p>
+
+  <div class="warning-box">
+    ⚠️ AMTLICHER VOLLSTRECKUNGSBESCHEID: DIE DARLEHENSFORDERUNG LNC-${(lc.id || '').slice(0,6).toUpperCase()} WURDE HEUTE WENGEN ZAHLUNGSVERZUGS UNTER BERUFUNG AUF DIE ABTRETUNGSERKLÄRUNG AN DAS INKASSO-SYNDIKAT VERKAUFT.
+  </div>
+
+  <p><strong>ZUSAMMENSTELLUNG DER VOLLSTRECKUNGSFORDERUNG:</strong></p>
+  <p>• Offener Darlehens-Restbetrag: <strong>${(lc.principal || 0).toFixed(2).replace('.', ',')}€</strong></p>
+  <p>• Gesetzliche Inkasso- & Bearbeitungsgebühr (50%): <strong>${(lc.inkassoFee || 0).toFixed(2).replace('.', ',')}€</strong></p>
+  <hr style="border:0;border-top:1px dashed #000">
+  <p style="font-size:12pt;color:#cc0000"><strong>TOTAL ZU VOLLSTRECKENDE FORDERUNG: ${(rem || 0).toFixed(2).replace('.', ',')}€</strong></p>
+
+  <p style="margin-top:20px">Sollte der Betrag nicht innerhalb von 24 Stunden auf das angegebene Treuhandkonto eingehen, erfolgen unmittelbare Kontensperrungen, Gehaltspfändungen beim Arbeitgeber sowie die Eintragung in das öffentliche Schuldnerverzeichnis.</p>
+
+  <p style="margin-top:40px">Hochachtungsvoll,<br><strong>ZENTRALES INKASSO- & VOLLSTRECKUNGS-SYNDIKAT</strong></p>
+</body></html>`;
+
+  const w = window.open('', '_blank');
+  if (w) { w.document.write(html); w.document.close(); }
 }
 
 // --- 3-STUFEN-MAHNVERFAHREN ENGINE ---
@@ -4511,6 +5121,43 @@ async function checkAndApplyMahnstufen() {
           lastMahnAt: firebase.firestore.FieldValue.serverTimestamp()
         });
       } catch (e) { console.error('Mahnstufen update error:', e); }
+    }
+  }
+
+  // Darlehensverträge Mahnstufen Überwachung
+  for (const lc of loanContracts) {
+    if (lc.status === 'completed' || lc.status === 'inkasso_sold') continue;
+    const loanPayments = getLoanPayments(lc);
+    const totalPaid = loanPayments.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
+    const startTotal = (lc.principal || 0) + (lc.addonsSum || 0);
+    const remaining = Math.max(0, startTotal - totalPaid);
+    if (remaining <= 0) continue;
+
+    const createdTime = lc.createdAt?.seconds ? lc.createdAt.seconds * 1000 : (typeof lc.createdAt === 'number' ? lc.createdAt : Date.now());
+    const daysActive = (now - createdTime) / (1000 * 3600 * 24);
+
+    // If active for more than 7 days with zero or low payments, escalate Mahnstufe
+    let targetStufe = 0;
+    if (daysActive >= 21) targetStufe = 3;
+    else if (daysActive >= 14) targetStufe = 2;
+    else if (daysActive >= 7) targetStufe = 1;
+
+    const curStufe = lc.mahnStufe || 0;
+    if (targetStufe > curStufe) {
+      let fee = 0;
+      if (targetStufe === 1 && curStufe < 1) fee = 15.00;
+      else if (targetStufe === 2 && curStufe < 2) fee = 35.00;
+      else if (targetStufe === 3 && curStufe < 3) fee = round2(remaining * 0.25);
+
+      try {
+        await db.collection('loanContracts').doc(lc.id).update({
+          mahnStufe: targetStufe,
+          addonsSum: (lc.addonsSum || 0) + fee,
+          lastMahnAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        lc.mahnStufe = targetStufe;
+        lc.addonsSum = (lc.addonsSum || 0) + fee;
+      } catch (e) { console.error('Loan Mahnstufen update error:', e); }
     }
   }
 }
@@ -4554,17 +5201,17 @@ function generateInkassoDrohbriefPDF(subName, amount, title) {
 // --- SÜNDER-GLÜCKSRAD (WHEEL OF FORTUNE) ---
 const WHEEL_SEGMENTS = [
   { label: '5€ DEMUT-OBOLUS', amount: 5, color: '#27ae60' },
-  { label: '10€ KAFFEE-TRIBUT', amount: 10, color: '#2980b9' },
+  { label: '6€ TRIBUT-STRAFE', amount: 6, color: '#16a085' },
   { label: '🔥 2x ZINSEN (3 W.)', amount: 0, special: 'double_interest_3w', color: '#8e44ad' },
-  { label: '15€ LOSER-ZUSCHLAG', amount: 15, color: '#16a085' },
-  { label: '20€ SCHUH-PUTZ', amount: 20, color: '#e67e22' },
+  { label: '7€ KAFFEE-ZUSCHLAG', amount: 7, color: '#2980b9' },
+  { label: '8€ SCHUH-PUTZ', amount: 8, color: '#e67e22' },
   { label: '⚡ 2x FAG-TAX FR', amount: 0, special: 'double_tax_friday', color: '#cc0000' },
-  { label: '25€ TRIBUT', amount: 25, color: '#9b59b6' },
-  { label: '30€ EROTIK-TAX', amount: 30, color: '#d35400' },
-  { label: '35€ ZINS-STRAFE', amount: 35, color: '#2c3e50' },
-  { label: '40€ SCHWEINE-TAX', amount: 40, color: '#c0392b' },
-  { label: '45€ DEMÜTIGUNG', amount: 45, color: '#6D214F' },
-  { label: '50€ MAX-STRAFE', amount: 50, color: '#b71540' }
+  { label: '9€ DEMÜTIGUNG', amount: 9, color: '#9b59b6' },
+  { label: '10€ EROTIK-TAX', amount: 10, color: '#d35400' },
+  { label: '5€ SCHWEINE-OBOLUS', amount: 5, color: '#2c3e50' },
+  { label: '8€ KNECHT-STRAFE', amount: 8, color: '#c0392b' },
+  { label: '10€ ZINS-STRAFE', amount: 10, color: '#6D214F' },
+  { label: '20€ MAX-STRAFE', amount: 20, color: '#b71540' }
 ];
 
 let isSpinning = false;
@@ -4623,20 +5270,20 @@ async function spinWheel() {
   isSpinning = true;
   const curSubId = currentUser.id || currentUser.uid || 'sub';
 
-  // 1. Charge 5.00€ spin fee automatically as a wheel spin debt
+  // 1. Charge 2.50€ spin fee automatically as a wheel spin debt
   try {
     const feeObj = {
       subId: curSubId,
       username: currentUser.username || 'sub',
       prizeTitle: 'Glücksrad-Einsatzgebühr',
-      prizeAmount: 5.00,
+      prizeAmount: 2.50,
       dueDate: Date.now() + 24 * 3600 * 1000,
       paid: false,
       mahnStufe: 0,
       createdAt: new Date()
     };
     await db.collection('wheelSpins').add(feeObj);
-    showToast('5,00€ Glücksrad-Gebühr berechnet 💸', 'info');
+    showToast('2,50€ Glücksrad-Gebühr berechnet 💸', 'info');
   } catch (e) { console.error('Spin fee charge failed:', e); }
 
   const spinBtn = document.getElementById('btn-spin-wheel');
@@ -4813,14 +5460,21 @@ function renderSubLoansView() {
     const remainingBalance = Math.max(0, startTotal - totalPaid);
     const progressPercent = Math.min(100, Math.round((totalPaid / (startTotal || 1)) * 100));
 
+    const isInkassoSold = lc.status === 'inkasso_sold';
+    const mahnBadge = (lc.mahnStufe || 0) > 0 ? `<span style="background:var(--red);color:#fff;padding:2px 6px;border-radius:3px;font-size:0.7rem;font-weight:700">⚠️ MAHNSTUFE ${lc.mahnStufe}</span>` : '';
+
     return `
-      <div style="padding:14px;background:var(--bg-surface);border:1.5px solid var(--border-red-bright);margin-bottom:12px;border-radius:6px;box-shadow:0 4px 15px rgba(0,0,0,0.3)">
+      <div style="padding:14px;background:var(--bg-surface);border:1.5px solid ${isInkassoSold ? 'var(--red)' : 'var(--border-red-bright)'};margin-bottom:12px;border-radius:6px;box-shadow:0 4px 15px rgba(0,0,0,0.3)">
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
           <div>
-            <div style="font-weight:900;font-size:0.95rem;color:var(--red)">📜 DARLEHEN #${lc.id.slice(0,8).toUpperCase()}</div>
+            <div style="font-weight:900;font-size:0.95rem;color:var(--red)">📜 DARLEHEN #${lc.id.slice(0,8).toUpperCase()} ${mahnBadge} ${isInkassoSold ? '<span style="background:var(--red);color:#fff;padding:2px 6px;border-radius:3px;font-size:0.7rem">🔥 AN INKASSO VERKAUFT</span>' : ''}</div>
             <div style="font-size:0.75rem;color:var(--text-dim)">Nennbetrag: ${principal.toFixed(2)}€ • Zinsen: ${weeklyInterest.toFixed(2)}€/Woche • Gebühren: ${addonsSum.toFixed(2)}€</div>
+            <div style="font-size:0.7rem;color:var(--purple);margin-top:2px">📜 Vertrag: § 781 BGB Schuldanerkenntnis | § 398 BGB Gehaltsabtretung wirksam</div>
           </div>
-          <button class="btn btn--sm btn--cyan btn-download-loan-pdf" data-lcid="${lc.id}">📄 VERTRAG-PDF</button>
+          <div class="card-actions-responsive">
+            <button class="btn btn--sm btn--cyan btn-download-loan-pdf" data-lcid="${lc.id}">📄 VERTRAG-PDF</button>
+            ${isInkassoSold ? `<button class="btn btn--sm btn--orange btn-download-inkasso-pdf" data-lcid="${lc.id}">⚡ VOLLSTRECKUNGSBESCHEID</button>` : ''}
+          </div>
         </div>
 
         <!-- PROGRESS BAR -->
@@ -4854,7 +5508,7 @@ function renderSubLoansView() {
         </div>
 
         <!-- ACTIONS: RATE ANPASSEN & SONDERZAHLUNG -->
-        <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+        <div class="form-action-row" style="margin-top:12px">
           <button class="btn btn--sm btn--orange btn-adjust-loan-rate" data-lcid="${lc.id}">✎ RATE ANPASSEN</button>
           <button class="btn btn--sm btn--success btn-loan-sonderzahlung" data-lcid="${lc.id}">💳 SONDERZAHLUNG VEREINBAREN</button>
         </div>
@@ -4875,6 +5529,13 @@ function renderSubLoansView() {
     btn.onclick = () => {
       const lc = loanContracts.find(l => l.id === btn.dataset.lcid);
       if (lc) generateLoanContractPDF(lc);
+    };
+  });
+
+  qsa('.btn-download-inkasso-pdf').forEach(btn => {
+    btn.onclick = () => {
+      const lc = loanContracts.find(l => l.id === btn.dataset.lcid);
+      if (lc) generateInkassoVollstreckungsBescheidPDF(lc);
     };
   });
 
@@ -5153,7 +5814,7 @@ function renderDomPendingCheckins() {
           <div style="font-size:0.8rem;color:var(--red);font-weight:800;margin-top:2px">Betrag: ${amt}€ • Eingereicht am: ${dateStr}</div>
           <div style="font-size:0.75rem;color:var(--text-dim);margin-top:2px">Status: <span style="color:var(--orange);font-weight:700">⏳ WARTE AUF DEINE BESTÄTIGUNG</span></div>
         </div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <div class="card-actions-responsive">
           <button class="btn btn--sm btn--success btn-confirm-checkin-ok" data-pid="${p.id}" data-subname="${escapeHtml(subName)}" data-amt="${amt}">✓ ERHALTEN & RECHTZEITIG GEZAHLT BESTÄTIGEN</button>
           <button class="btn btn--sm btn--danger btn-confirm-checkin-late" data-pid="${p.id}" data-subname="${escapeHtml(subName)}" data-subid="${p.subId || ''}" data-amt="${amt}">⚠️ VERSPÄTET (+5€ STRAFE)</button>
         </div>
@@ -5240,9 +5901,9 @@ function renderTributeTicker() {
       <div style="padding:12px;background:var(--bg-surface);border:1px solid var(--border);border-radius:4px">
         <div style="font-weight:800;font-size:0.85rem">🙇 FLEXIBLER DEVOT-CHECKIN</div>
         <p style="font-size:0.75rem;color:var(--text-dim);margin-top:4px">Kriech her und erweise deinem Herrn spontan deine Ergebenheit durch einen freiwilligen Tribut.</p>
-        <div style="margin-top:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-          <input type="number" id="custom-tribute-amount" value="10" min="1" step="5" style="width:90px;padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);font-size:0.8rem">
-          <button id="btn-tribute-checkin" class="btn btn--sm btn--primary">🙇 TRIBUT-CHECKIN JETZT LEISTEN</button>
+        <div class="input-btn-group" style="margin-top:8px">
+          <input type="number" id="custom-tribute-amount" value="10" min="1" step="5" style="padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);font-size:0.8rem">
+          <button id="btn-tribute-checkin" class="btn btn--sm btn--primary">🙇 TRIBUT-CHECKIN LEISTEN</button>
         </div>
         ${checkinStatusHTML}
       </div>
@@ -5280,12 +5941,12 @@ function openCreateShopItemModal() {
         <textarea id="shop-desc-input" placeholder="Detaillierte Beschreibung des Artikels..." required style="width:100%;padding:8px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);height:60px;margin-top:2px"></textarea>
       </div>
 
-      <div style="display:flex;gap:8px">
-        <div style="flex:1">
+      <div class="form-action-row" style="display:flex;gap:8px">
+        <div style="flex:1;min-width:0">
           <label style="font-size:0.7rem;color:var(--text-dim);font-weight:700">3. MINDESTGEBOT (€) *</label>
           <input type="number" id="shop-minbid-input" value="50" min="1" step="5" required style="width:100%;padding:8px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);margin-top:2px">
         </div>
-        <div style="flex:1">
+        <div style="flex:1;min-width:0">
           <label style="font-size:0.7rem;color:var(--text-dim);font-weight:700">4. VERSANDKOSTEN (€) *</label>
           <input type="number" id="shop-shipping-input" value="4.99" min="0" step="0.01" required style="width:100%;padding:8px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);margin-top:2px">
         </div>
@@ -5351,6 +6012,41 @@ function openCreateShopItemModal() {
   }
 }
 
+async function deleteShopItem(itemId) {
+  const item = shopItems.find(i => i.id === itemId);
+  if (!item) return;
+
+  const confirmed = await showConfirm(
+    '🗑 ARTIKEL LÖSCHEN',
+    `Möchtest du den Artikel "${item.title}" und alle zugehörigen Gebote wirklich unwiderruflich löschen?`
+  );
+  if (!confirmed) return;
+
+  try {
+    if (db) {
+      // Delete shop item document
+      await db.collection('shopItems').doc(itemId).delete();
+
+      // Delete associated bids
+      const bidsToDelete = shopBids.filter(b => b.itemId === itemId);
+      for (const b of bidsToDelete) {
+        if (b.id) {
+          await db.collection('shopBids').doc(b.id).delete().catch(() => {});
+        }
+      }
+    }
+    // Update local state fallback
+    shopItems = shopItems.filter(i => i.id !== itemId);
+    shopBids = shopBids.filter(b => b.itemId !== itemId);
+
+    showToast(`Artikel "${item.title}" gelöscht!`, 'info');
+    renderDomShopOverview();
+  } catch (e) {
+    console.error('Error deleting shop item:', e);
+    showToast('Fehler beim Löschen des Artikels', 'error');
+  }
+}
+
 function renderDomShopOverview() {
   const el = document.getElementById('dom-shop-overview');
   if (!el) return;
@@ -5361,15 +6057,24 @@ function renderDomShopOverview() {
 
   el.innerHTML = shopItems.map(item => {
     const itemBids = shopBids.filter(b => b.itemId === item.id);
+    const pendingBids = itemBids.filter(b => b.status !== 'accepted' && b.status !== 'completed');
+    const acceptedBids = itemBids.filter(b => b.status === 'accepted' || b.status === 'completed');
     const highestBid = itemBids.length > 0 ? Math.max(...itemBids.map(b => b.bidAmount || 0)) : 0;
     const shipping = item.shippingCost !== undefined ? item.shippingCost : 4.99;
+    const isCompleted = item.status === 'completed' || acceptedBids.length > 0;
 
     return `
-      <div style="padding:12px;background:var(--bg-surface);border:1px solid var(--border);margin-bottom:10px;border-radius:4px">
+      <div style="padding:12px;background:var(--bg-surface);border:1px solid ${isCompleted ? 'var(--green)' : 'var(--border)'};margin-bottom:10px;border-radius:4px">
         <div style="display:flex;gap:10px;align-items:flex-start">
           ${item.imageUrl ? `<img src="${item.imageUrl}" style="width:70px;height:70px;object-fit:cover;border:1px solid var(--red);border-radius:4px">` : ''}
           <div style="flex:1">
-            <div style="font-weight:900;font-size:0.95rem;color:var(--text)">${escapeHtml(item.title)}</div>
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+              <div>
+                <div style="font-weight:900;font-size:0.95rem;color:var(--text)">${escapeHtml(item.title)}</div>
+                ${isCompleted ? `<span style="font-size:0.7rem;color:var(--green);font-weight:800;padding:2px 6px;background:rgba(0,230,118,0.15);border:1px solid var(--green);border-radius:3px;display:inline-block;margin-top:2px">✅ AUKTION DURCHGEFÜHRT & GEBUCHT</span>` : ''}
+              </div>
+              <button class="btn btn--sm btn--danger btn-delete-shop-item" data-itemid="${item.id}" style="padding:3px 8px;font-size:0.7rem">🗑 LÖSCHEN</button>
+            </div>
             <div style="font-size:0.75rem;color:var(--text-dim);margin-top:2px">${escapeHtml(item.description)}</div>
             <div style="font-size:0.75rem;color:var(--purple);margin-top:4px;font-weight:700">
               Mindestgebot: ${item.minBid}€ • Versand: +${shipping.toFixed(2)}€ • Top-Gebot: <strong style="color:var(--green);font-size:0.85rem">${highestBid > 0 ? highestBid.toFixed(2) + '€' : 'Keine Gebote'}</strong>
@@ -5378,20 +6083,46 @@ function renderDomShopOverview() {
         </div>
 
         <div style="margin-top:10px;padding-top:8px;border-top:1px dashed var(--border)">
-          <div style="font-weight:800;font-size:0.8rem;color:var(--purple)">🔨 Eingegangene Blind-Gebote (${itemBids.length}):</div>
-          ${itemBids.length === 0 ? '<div style="font-size:0.75rem;color:var(--text-dim);margin-top:2px">Noch keine Gebote eingegangen.</div>' : itemBids.map(b => {
+          <div style="font-weight:800;font-size:0.8rem;color:var(--purple);margin-bottom:4px">
+            🔨 Offene Gebote (${pendingBids.length}):
+          </div>
+          ${pendingBids.length === 0 ? '<div style="font-size:0.75rem;color:var(--text-dim);margin-top:2px">Keine offenen Gebote.</div>' : pendingBids.map(b => {
             const totalWithShipping = (b.bidAmount || 0) + shipping;
             return `
-              <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;background:var(--bg-card);margin-top:4px;border-radius:3px;font-size:0.75rem">
+              <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;background:var(--bg-card);margin-top:4px;border-radius:3px;font-size:0.75rem;flex-wrap:wrap;gap:4px">
                 <span>🐷 <strong>${escapeHtml(b.username)}</strong>: <strong style="color:var(--green);font-size:0.85rem">${b.bidAmount}€</strong> (+${shipping.toFixed(2)}€ Versand = <strong>${totalWithShipping.toFixed(2)}€</strong>)</span>
-                ${b.status === 'accepted' ? '<span style="color:var(--green);font-weight:900">✓ AKZEPTIERT</span>' : `<button class="btn btn--sm btn--success btn-accept-bid" data-bidid="${b.id}">✓ GEBOT AKZEPTIERN</button>`}
+                <button class="btn btn--sm btn--success btn-accept-bid" data-bidid="${b.id}">✓ GEBOT AKZEPTIEREN & ABRECHNEN</button>
               </div>
             `;
           }).join('')}
+
+          ${acceptedBids.length > 0 ? `
+            <div style="margin-top:10px;padding-top:6px;border-top:1px dotted var(--green)">
+              <div style="font-weight:800;font-size:0.8rem;color:var(--green);margin-bottom:4px">
+                ✅ Durchgeführte Abrechnungen & Gewinner-Gebote (${acceptedBids.length}):
+              </div>
+              ${acceptedBids.map(b => {
+                const totalWithShipping = (b.bidAmount || 0) + shipping;
+                return `
+                  <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;background:rgba(0,230,118,0.08);border:1px solid var(--green);margin-top:4px;border-radius:3px;font-size:0.75rem;flex-wrap:wrap;gap:4px">
+                    <span>🐷 <strong>${escapeHtml(b.username)}</strong>: <strong style="color:var(--green)">${b.bidAmount}€</strong> (+${shipping.toFixed(2)}€ Versand = <strong>${totalWithShipping.toFixed(2)}€</strong>)</span>
+                    <div style="display:flex;align-items:center;gap:6px">
+                      <span style="color:var(--green);font-weight:900">✅ DURCHGEFÜHRT & GEBUCHT</span>
+                      <button class="btn btn--sm btn--ghost btn-delete-bid" data-bidid="${b.id}" style="font-size:0.65rem;color:var(--red)" title="Gebot aus der Liste entfernen">🗑 ENTFERNEN</button>
+                    </div>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+          ` : ''}
         </div>
       </div>
     `;
   }).join('');
+
+  qsa('.btn-delete-shop-item').forEach(btn => {
+    btn.onclick = () => deleteShopItem(btn.dataset.itemid);
+  });
 
   qsa('.btn-accept-bid').forEach(btn => {
     btn.onclick = async () => {
@@ -5401,9 +6132,45 @@ function renderDomShopOverview() {
       const shipping = item && item.shippingCost !== undefined ? item.shippingCost : 4.99;
       const grandTotal = round2((bid.bidAmount || 0) + shipping);
 
-      await db.collection('shopBids').doc(bid.id).update({ status: 'accepted' });
-      await addPayment(grandTotal, 'dreck', `Auktion Gewonnen: ${item ? item.title : 'Shop Artikel'} (inkl. ${shipping.toFixed(2)}€ Versand)`, bid.subId);
-      showToast(`Gebot von ${bid.username} (${grandTotal.toFixed(2)}€) akzeptiert & gebucht!`, 'success');
+      try {
+        if (db) {
+          await db.collection('shopBids').doc(bid.id).update({
+            status: 'accepted',
+            acceptedAt: firebase.firestore.FieldValue.serverTimestamp()
+          });
+          if (item && item.id) {
+            await db.collection('shopItems').doc(item.id).update({
+              status: 'completed',
+              winningBidId: bid.id,
+              winnerUsername: bid.username
+            }).catch(() => {});
+          }
+        }
+        await addPayment(grandTotal, 'dreck', `Auktion Gewonnen: ${item ? item.title : 'Shop Artikel'} (inkl. ${shipping.toFixed(2)}€ Versand)`, bid.subId);
+        bid.status = 'accepted';
+        if (item) item.status = 'completed';
+
+        showToast(`Abrechnung durchgeführt! Gebot von ${bid.username} (${grandTotal.toFixed(2)}€) verbucht ✅`, 'success');
+        renderDomShopOverview();
+      } catch (e) {
+        console.error('Error accepting bid:', e);
+        showToast('Fehler bei der Abrechnung', 'error');
+      }
+    };
+  });
+
+  qsa('.btn-delete-bid').forEach(btn => {
+    btn.onclick = async () => {
+      const bidId = btn.dataset.bidid;
+      if (!bidId) return;
+      try {
+        if (db) await db.collection('shopBids').doc(bidId).delete();
+        shopBids = shopBids.filter(b => b.id !== bidId);
+        showToast('Gebot aus der Liste entfernt', 'info');
+        renderDomShopOverview();
+      } catch (e) {
+        console.error('Error deleting bid:', e);
+      }
     };
   });
 }
@@ -5411,17 +6178,58 @@ function renderDomShopOverview() {
 function renderSubShopOverview() {
   const el = document.getElementById('sub-shop-overview');
   if (!el || !currentUser) return;
+  const curSubId = currentUser.id || currentUser.uid;
+
+  const myBids = shopBids.filter(b => b.subId === curSubId || b.subId === currentUser.id || b.subId === currentUser.uid || b.username === currentUser.username);
+
+  let html = '';
+
+  // Summary Card for Sub Bids
+  if (myBids.length > 0) {
+    html += `
+      <div style="margin-bottom:16px;padding:12px;background:var(--bg-surface);border:1.5px dashed var(--purple);border-radius:6px">
+        <div style="font-weight:900;font-size:0.85rem;color:var(--purple);margin-bottom:8px;display:flex;justify-content:space-between;align-items:center">
+          <span>📋 DEINE ABGEGEBENEN BLIND-GEBOTE (${myBids.length})</span>
+          <span style="font-size:0.7rem;color:var(--green)">🟢 AKTIV</span>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          ${myBids.map(b => {
+            const item = shopItems.find(i => i.id === b.itemId);
+            const title = item ? item.title : 'Shop-Artikel';
+            const shipping = item && item.shippingCost !== undefined ? item.shippingCost : 4.99;
+            const total = (b.bidAmount || 0) + shipping;
+            const isAccepted = b.status === 'accepted';
+            return `
+              <div style="display:flex;justify-content:space-between;align-items:center;padding:8px;background:var(--bg-card);border:1px solid ${isAccepted ? 'var(--green)' : 'var(--border)'};border-radius:4px;font-size:0.75rem;flex-wrap:wrap;gap:4px">
+                <div>
+                  <strong style="color:var(--text);font-size:0.85rem">${escapeHtml(title)}</strong>
+                  <div style="color:var(--text-dim);font-size:0.75rem;margin-top:2px">Gebot: <strong style="color:var(--green)">${(b.bidAmount||0).toFixed(2)}€</strong> (+${shipping.toFixed(2)}€ Versand = <strong>${total.toFixed(2)}€</strong>)</div>
+                </div>
+                <div>
+                  ${isAccepted ? '<span style="color:var(--green);font-weight:900;padding:3px 8px;background:rgba(0,230,118,0.15);border:1px solid var(--green);border-radius:3px">✓ VOM HERRN AKZEPTIERT</span>' : '<span style="color:var(--orange);font-weight:700;padding:3px 8px;background:rgba(255,152,0,0.1);border-radius:3px">⏳ Wartet auf Entscheidung</span>'}
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </div>
+    `;
+  }
+
   if (shopItems.length === 0) {
-    el.innerHTML = '<p style="color:var(--text-dim);font-size:0.8rem;text-align:center">Aktuell keine Artikel in der Blind-Auktion.</p>';
+    html += '<p style="color:var(--text-dim);font-size:0.8rem;text-align:center">Aktuell keine Artikel in der Blind-Auktion.</p>';
+    el.innerHTML = html;
     return;
   }
 
-  el.innerHTML = shopItems.map(item => {
-    const myBid = shopBids.find(b => b.itemId === item.id && b.subId === currentUser.id);
+  html += shopItems.map(item => {
+    const myBid = shopBids.find(b => b.itemId === item.id && (b.subId === curSubId || b.subId === currentUser.id || b.subId === currentUser.uid || b.username === currentUser.username));
     const shipping = item.shippingCost !== undefined ? item.shippingCost : 4.99;
+    const hasBid = !!myBid;
 
     return `
-      <div style="padding:12px;background:var(--bg-surface);border:1px solid var(--border);margin-bottom:10px;border-radius:4px">
+      <div style="padding:12px;background:var(--bg-surface);border:${hasBid ? '1.5px solid var(--purple)' : '1px solid var(--border)'};margin-bottom:10px;border-radius:4px;box-shadow:${hasBid ? '0 0 12px rgba(187,134,252,0.2)' : 'none'}">
+        ${hasBid ? `<div style="display:inline-block;padding:3px 8px;background:var(--purple);color:#000;font-weight:900;font-size:0.7rem;border-radius:3px;margin-bottom:8px">🟢 DU HAST HIER GEBOTEN (${myBid.bidAmount.toFixed(2)}€)</div>` : ''}
         <div style="display:flex;gap:10px;align-items:flex-start">
           ${item.imageUrl ? `<img src="${item.imageUrl}" style="width:75px;height:75px;object-fit:cover;border:1px solid var(--red);border-radius:4px">` : ''}
           <div style="flex:1">
@@ -5434,9 +6242,21 @@ function renderSubShopOverview() {
         </div>
 
         <div style="margin-top:10px;padding-top:8px;border-top:1px dashed var(--border)">
-          ${myBid ? `<div style="font-size:0.75rem;color:var(--green);font-weight:700">Dein Blind-Gebot: <strong>${myBid.bidAmount}€</strong> (${myBid.status === 'accepted' ? '✓ VOM HERRN AKZEPTIERT!' : 'Wartet auf Entscheidung des Herrn'})</div>` : `
-            <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-              <input type="number" class="sub-bid-input" data-itemid="${item.id}" placeholder="Dein Gebot €" min="${item.minBid}" style="width:130px;padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);font-size:0.8rem">
+          ${myBid ? `
+            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px">
+              <div style="font-size:0.75rem;color:var(--green);font-weight:700">
+                Dein Blind-Gebot: <strong style="font-size:0.9rem">${myBid.bidAmount.toFixed(2)}€</strong> (+${shipping.toFixed(2)}€ Versand = <strong>${((myBid.bidAmount||0)+shipping).toFixed(2)}€</strong>)
+                <div style="font-size:0.7rem;color:${myBid.status === 'accepted' ? 'var(--green)' : 'var(--orange)'};font-weight:800;margin-top:2px">
+                  ${myBid.status === 'accepted' ? '✓ VOM HERRN AKZEPTIERT & VERBUCHT!' : '⏳ Wartet auf Entscheidung des Herrn'}
+                </div>
+              </div>
+              ${myBid.status !== 'accepted' ? `
+                <button class="btn btn--sm btn--ghost btn-edit-bid" data-itemid="${item.id}" style="font-size:0.7rem">✎ GEBOT ERHÖHEN / ÄNDERN</button>
+              ` : ''}
+            </div>
+          ` : `
+            <div class="input-btn-group">
+              <input type="number" class="sub-bid-input" data-itemid="${item.id}" placeholder="Dein Gebot €" min="${item.minBid}" style="padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);font-size:0.8rem">
               <button class="btn btn--sm btn--primary btn-submit-bid" data-itemid="${item.id}">🔨 GEBOT ABGEBEN</button>
             </div>
           `}
@@ -5445,21 +6265,67 @@ function renderSubShopOverview() {
     `;
   }).join('');
 
+  el.innerHTML = html;
+
   qsa('.btn-submit-bid').forEach(btn => {
     btn.onclick = async () => {
       const itemId = btn.dataset.itemid;
       const input = qs(`.sub-bid-input[data-itemid="${itemId}"]`);
-      const val = parseFloat(input.value) || 0;
+      const val = parseFloat(input ? input.value : 0) || 0;
       const item = shopItems.find(i => i.id === itemId);
       if (!item || val < item.minBid) {
-        showAlert('GEBOT UNGÜLTIG', `Dein Gebot muss mindestens ${item.minBid}€ betragen.`);
+        showAlert('GEBOT UNGÜLTIG', `Dein Gebot muss mindestens ${item ? item.minBid : 0}€ betragen.`);
         return;
       }
-      await db.collection('shopBids').add({
-        itemId, subId: currentUser.id, username: currentUser.username,
-        bidAmount: val, status: 'pending', createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      try {
+        await db.collection('shopBids').add({
+          itemId, subId: curSubId, username: currentUser.username || 'sub',
+          bidAmount: val, status: 'pending', createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        showToast('Blind-Gebot abgegeben! 🔨', 'success');
+        renderSubShopOverview();
+      } catch (e) {
+        console.error(e);
+        showToast('Fehler beim Abgeben des Gebots', 'error');
+      }
+    };
+  });
+
+  qsa('.btn-edit-bid').forEach(btn => {
+    btn.onclick = () => {
+      const itemId = btn.dataset.itemid;
+      const item = shopItems.find(i => i.id === itemId);
+      const myBid = shopBids.find(b => b.itemId === itemId && (b.subId === curSubId || b.subId === currentUser.id || b.subId === currentUser.uid || b.username === currentUser.username));
+      if (!item || !myBid) return;
+
+      const bodyHTML = `
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <p style="font-size:0.8rem;color:var(--text-secondary)">Passe dein Blind-Gebot für <strong>${escapeHtml(item.title)}</strong> an.</p>
+          <div>
+            <label style="font-size:0.7rem;color:var(--text-dim);font-weight:700">NEUES GEBOT (€) * (Mindestgebot: ${item.minBid}€)</label>
+            <input type="number" id="new-bid-amount-input" value="${myBid.bidAmount}" min="${item.minBid}" step="5" style="width:100%;padding:10px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);margin-top:4px">
+          </div>
+        </div>
+      `;
+
+      showModal('✎ BLIND-GEBOT ÄNDERN', bodyHTML, 'GEBOT JETZT AKTUALISIEREN', async () => {
+        const val = parseFloat(document.getElementById('new-bid-amount-input').value) || 0;
+        if (val < item.minBid) {
+          showAlert('FEHLER', `Das Gebot muss mindestens ${item.minBid}€ betragen.`);
+          return false;
+        }
+        try {
+          await db.collection('shopBids').doc(myBid.id).update({
+            bidAmount: val,
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+          });
+          showToast(`Gebot auf ${val.toFixed(2)}€ aktualisiert! 🔨`, 'success');
+          renderSubShopOverview();
+        } catch (e) {
+          console.error(e);
+          showToast('Fehler beim Aktualisieren des Gebots', 'error');
+        }
       });
-      showToast('Blind-Gebot abgegeben!', 'success');
     };
   });
 }

@@ -202,6 +202,47 @@ function toMs(val) {
 }
 
 // =============================================
+// CENTRALIZED TOTALS & DEBT CALCULATIONS
+// =============================================
+function getSubTotalPaid(subId, username) {
+  if (!subId && !username) return 0;
+  return round2((payments || []).filter(p => {
+    const match = (subId && p.subId === subId) || (username && p.paidBy === username);
+    const confirmed = p.confirmed !== false && p.status !== 'pending_confirmation';
+    return match && confirmed;
+  }).reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0));
+}
+
+function getSubOpenDebt(subId, username) {
+  if (!subId && !username) return 0;
+
+  // 1. Offene Fag-Tax Rechnungen
+  const openFTs = (fagTaxes || []).filter(f =>
+    ((subId && f.subId === subId) || (username && f.username === username)) && !f.paid
+  );
+  const openFTTotal = openFTs.reduce((s, f) => s + (f.totalAmount || f.baseAmount || 0), 0);
+
+  // 2. Offene Glücksrad-Strafen
+  const openSpins = (wheelSpins || []).filter(w =>
+    ((subId && w.subId === subId) || (username && w.username === username)) && !w.paid
+  );
+  const openSpinsTotal = openSpins.reduce((s, w) => s + (w.prizeAmount || 0) + ((w.mahnStufe || 0) * 5), 0);
+
+  // 3. Offene Darlehen (Restschuld)
+  const openLoans = (loanContracts || []).filter(l =>
+    ((subId && l.subId === subId) || (username && l.username === username)) &&
+    l.status !== 'completed' && l.status !== 'inkasso_sold'
+  );
+  const openLoanTotal = openLoans.reduce((s, l) => {
+    const principalTotal = (l.principal || 0) + (l.addonsSum || 0);
+    const paid = (l.totalPaid || 0);
+    return s + Math.max(0, principalTotal - paid);
+  }, 0);
+
+  return round2(openFTTotal + openSpinsTotal + openLoanTotal);
+}
+
+// =============================================
 // CENTRAL FAG-TAX CALCULATION
 // Single source of truth for all Fag-Tax amounts
 // =============================================
@@ -1571,7 +1612,7 @@ async function subCheckAccount() {
 
     const insults = [
       `Du hast diese Woche ${calc.logins} Login(s) gehabt und warst ${formatDuration(calc.totalSeconds)} online. Kosten: ${calc.loginCost.toFixed(2).replace('.',',')}€ Logins + ${calc.timeCost.toFixed(2).replace('.',',')}€ Zeit + ${calc.taxAmount.toFixed(2).replace('.',',')}€ Steuer + ${calc.checkCost.toFixed(2).replace('.',',')}€ Prüfungen. GESAMT: ${totalWeek.toFixed(2).replace('.',',')}€. −${costStr}€ für diese Auskunft.`,
-      `HIER IST DEIN KONTOSTAND, LOSER: ${calc.logins} Logins, ${formatDuration(calc.totalSeconds)} online. ${calc.loginCost.toFixed(2).replace('.',',')}€ + ${calc.timeCost.toFixed(2).replace('.',',')}€ + ${calc.taxAmount.toFixed(2).replace('.',',')}€ + ${calc.checkCost.toFixed(2).replace('.',',')}€ = ${totalWeek.toFixed(2).replace('.',',')}€. Dafür hast du ${costStr}€ bezahlt. Lächerlich.`,
+      `HIER IST DEIN KONTOSTAND, LOSER: ${calc.logins} Logins, ${formatDuration(calc.totalSeconds)} online. ${calc.loginCost.toFixed(2).replace('.',',')}€ + ${calc.timeCost.toFixed(2).replace('.',',')}€ + ${calc.taxAmount.toFixed(2).replace('.',',')}€ + ${calc.checkCost.toFixed(2).replace('.',',')}€ = ${totalWeek.toFixed(2).replace('.',',')}€. Dafür wurden ${costStr}€ Abfragegebühr fällig. Lächerlich.`,
       `Du wolltest es wissen? Ja? ${calc.logins}x eingeloggt, ${formatDuration(calc.totalSeconds)} Rumgehangen. ${calc.loginCost.toFixed(2).replace('.',',')}€ + ${calc.timeCost.toFixed(2).replace('.',',')}€ + ${calc.taxAmount.toFixed(2).replace('.',',')}€ Steuer + ${calc.checkCost.toFixed(2).replace('.',',')}€ Prüfungen. ${totalWeek.toFixed(2).replace('.',',')}€. −${costStr}€ Prüfgebühr. Und? Besser jetzt?`,
       `Kontoprüfung abgeschlossen. Befund: Du bist ${calc.logins} Mal gekrochen und warst ${formatDuration(calc.totalSeconds)} online. Schuld: ${totalWeek.toFixed(2).replace('.',',')}€ (inkl. ${costStr}€ für diese Nachricht). Zahl einfach.`,
       `${calc.logins} Logins. ${formatDuration(calc.totalSeconds)} verschwendete Zeit. ${totalWeek.toFixed(2).replace('.',',')}€ Schulden. Plus ${costStr}€ weil du zu dumm bist, dir die Zahlen selbst zu merken. Fertig.`,
@@ -1789,7 +1830,11 @@ async function settleAllFagTaxPositions(ft, payDate = new Date(), intAmt = 0, to
   const subId = ft.subId;
   const sub = subs.find(s => s.id === subId);
   const subUsername = sub ? sub.username : (ft.username || '');
-  const pmtAmount = totalPmt || ft.totalAmount || 0;
+
+  // Calculate full bill total: totalAmount (or baseAmount) + Verzugszinsen
+  const invoiceTotal = round2((ft.totalAmount || ft.baseAmount || 0) + (intAmt || 0));
+  // Standardize payment amount: if totalPmt is unprovided or <= 0, default to full invoiceTotal
+  const pmtAmount = (totalPmt && totalPmt > 0) ? round2(totalPmt) : invoiceTotal;
 
   // 1. Record payment in payments collection
   let pmtRefId = null;
@@ -1802,7 +1847,9 @@ async function settleAllFagTaxPositions(ft, payDate = new Date(), intAmt = 0, to
         paidBy: subUsername,
         subId: subId,
         createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-        createdBy: currentUser ? currentUser.role : 'dom'
+        createdBy: currentUser ? currentUser.role : 'dom',
+        confirmed: true,
+        status: 'confirmed'
       });
       pmtRefId = pmtRef.id;
     }
@@ -1815,13 +1862,15 @@ async function settleAllFagTaxPositions(ft, payDate = new Date(), intAmt = 0, to
     await db.collection('fagTaxes').doc(ft.id).update({
       paid: true,
       paidAt: payDate,
-      interestAmount: intAmt,
+      interestAmount: intAmt || 0,
       totalWithInterest: pmtAmount,
+      totalAmount: Math.max(ft.totalAmount || 0, pmtAmount),
       paymentId: pmtRefId || null
     }).catch(e => console.warn('fagTaxes update error:', e));
   }
   ft.paid = true;
   ft.paidAt = payDate;
+  ft.totalWithInterest = pmtAmount;
   if (intAmt > 0) ft.interestAmount = intAmt;
 
   // 3. Mark all open Wheel Spins for this sub as paid
@@ -2822,19 +2871,14 @@ function updateTotals() {
 // --- DEMÜTIGENDER SCHULDENAUSZUG PDF GENERATOR ---
 function generateSubHumiliationStatementPDF(sub) {
   const name = sub.displayName || sub.username;
-  const subPayments = payments.filter(p => p.subId === sub.id || p.paidBy === sub.username);
-  const totalPaid = subPayments.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
+  const totalPaid = getSubTotalPaid(sub.id, sub.username);
+  const totalOpenDebt = getSubOpenDebt(sub.id, sub.username);
 
-  const myLoans = loanContracts.filter(l => l.subId === sub.id);
-  const totalLoanPrincipal = myLoans.reduce((s, l) => s + (l.principal || 0) + (l.addonsSum || 0), 0);
-
-  const openFagTaxes = fagTaxes.filter(f => f.subId === sub.id && !f.paid);
-  const totalOpenFagTax = openFagTaxes.reduce((s, f) => s + (f.totalAmount || 0), 0);
-
+  const myLoans = loanContracts.filter(l => l.subId === sub.id || l.username === sub.username);
+  const openFagTaxes = fagTaxes.filter(f => (f.subId === sub.id || f.username === sub.username) && !f.paid);
+  const totalOpenFagTax = openFagTaxes.reduce((s, f) => s + (f.totalAmount || f.baseAmount || 0), 0);
   const openSpins = wheelSpins.filter(w => (w.subId === sub.id || w.username === sub.username) && !w.paid);
-  const totalOpenWheel = openSpins.reduce((s, w) => s + (w.prizeAmount || 0), 0);
-
-  const totalOpenDebt = totalOpenFagTax + totalOpenWheel + Math.max(0, totalLoanPrincipal - totalPaid);
+  const totalOpenWheel = openSpins.reduce((s, w) => s + (w.prizeAmount || 0) + ((w.mahnStufe || 0) * 5), 0);
 
   const html = `<!DOCTYPE html>
 <html lang="de"><head><meta charset="UTF-8"><title>SCHULDENAUSZUG ${escapeHtml(name.toUpperCase())}</title>
@@ -2862,7 +2906,7 @@ function generateSubHumiliationStatementPDF(sub) {
 
   <div class="section">
     <div class="title">2. OFFENE POSTEN & VERPFLICHTUNGEN</div>
-    <p>• Offene FagTax-Wochenrechnungen: ${totalOpenFagTax.toFixed(2).replace('.', ',')}€</p>
+    <p>• Offene FagTax-Wochenrechnungen: ${totalOpenFagTax.toFixed(2).replace('.', ',')}€ (${openFagTaxes.length} Rechnungen)</p>
     <p>• Offene Glücksrad-Strafen: ${totalOpenWheel.toFixed(2).replace('.', ',')}€ (${openSpins.length} Strafen ausstehend)</p>
     <p>• Laufende Darlehensverträge: ${myLoans.length} Vertrag/Verträge</p>
   </div>
@@ -2891,8 +2935,7 @@ function renderSubs() {
 
   // Sort subs by total tribute paid (ranking)
   const rankedSubs = [...active].map(s => {
-    const totalPaid = payments.filter(p => p.subId === s.id || p.paidBy === s.username)
-      .reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
+    const totalPaid = getSubTotalPaid(s.id, s.username);
     return { sub: s, totalPaid };
   }).sort((a, b) => b.totalPaid - a.totalPaid);
 
@@ -2910,12 +2953,12 @@ function renderSubs() {
     else if (rankIdx === 1 && totalPaid > 0) { rankBadge = '🥈 SILBER-SCHWEIN'; rankColor = '#c0c0c0'; }
     else if (totalPaid > 100) { rankBadge = '🥉 ERTRAGREICHE SAU'; rankColor = '#cd7f32'; }
 
-    // Calculate open debts for this sub
-    const openFTs = fagTaxes.filter(f => f.subId === s.id && !f.paid);
-    const openFTTotal = openFTs.reduce((sum, f) => sum + (f.totalAmount || 0), 0);
+    // Calculate open debts for this sub centrally
+    const openFTs = fagTaxes.filter(f => (f.subId === s.id || f.username === s.username) && !f.paid);
+    const openFTTotal = openFTs.reduce((sum, f) => sum + (f.totalAmount || f.baseAmount || 0), 0);
     const openSpins = wheelSpins.filter(w => (w.subId === s.id || w.username === s.username) && !w.paid);
-    const openSpinsTotal = openSpins.reduce((sum, w) => sum + (w.prizeAmount || 0), 0);
-    const totalDebt = openFTTotal + openSpinsTotal;
+    const openSpinsTotal = openSpins.reduce((sum, w) => sum + (w.prizeAmount || 0) + ((w.mahnStufe || 0) * 5), 0);
+    const totalDebt = getSubOpenDebt(s.id, s.username);
 
     if (isEditing) {
       return `<div class="sub-edit-row" data-id="${s.id}" style="padding:12px;background:var(--bg-surface);border:1px solid var(--border);border-radius:4px;margin-bottom:10px">
@@ -4245,17 +4288,18 @@ function renderDomFagTaxInvoices() {
     const kw = getKW(ws);
     const range = formatWeekRange(ws);
     const total = ft.totalAmount || 0;
+    const paidAmt = ft.totalWithInterest || total;
     const sub = subs.find(s => s.id === ft.subId);
     const subName = sub ? (sub.displayName || sub.username) : ft.username;
     
     const paidBadge = ft.paid 
-      ? '<span style="color:var(--green);font-weight:700">✓ BEZAHLT</span>'
+      ? `<span style="color:var(--green);font-weight:700">✓ BEZAHLT (${paidAmt.toFixed(2).replace('.', ',')}€)</span>`
       : '<span style="color:var(--red);font-weight:700">🔥 OFFEN</span>';
       
     return `<div style="display:flex;justify-content:space-between;align-items:center;padding:12px;background:var(--bg-surface);border:1px solid var(--border);margin-bottom:8px;border-radius:4px;gap:12px;flex-wrap:wrap">
       <div>
         <div style="font-weight:800;font-size:0.9rem">🐷 ${escapeHtml(subName)}: RECHNUNG KW ${kw} (${range})</div>
-        <div style="font-size:0.75rem;color:var(--text-dim);margin-top:2px">Gesamtbetrag: <strong style="color:var(--red)">${total.toFixed(2).replace('.', ',')}€</strong> • Status: ${paidBadge}</div>
+        <div style="font-size:0.75rem;color:var(--text-dim);margin-top:2px">Rechnungsbetrag: <strong style="color:var(--red)">${total.toFixed(2).replace('.', ',')}€</strong> • Status: ${paidBadge}</div>
       </div>
       <div class="card-actions-responsive">
         ${ft.paid ? '' : `<button class="btn btn--sm btn--success btn-mark-ft-paid" data-ftid="${ft.id}" data-subid="${ft.subId}" data-amt="${total}" data-kw="${kw}">✓ ALS BEZAHLT MARKIEREN</button>`}
@@ -4304,13 +4348,14 @@ function renderSubFagTaxInvoices() {
     const kw = getKW(ws);
     const range = formatWeekRange(ws);
     const total = ft.totalAmount || 0;
+    const paidAmt = ft.totalWithInterest || total;
     const paidBadge = ft.paid 
-      ? '<span style="color:var(--green);font-weight:700">✓ BEZAHLT</span>'
+      ? `<span style="color:var(--green);font-weight:700">✓ BEZAHLT (${paidAmt.toFixed(2).replace('.', ',')}€)</span>`
       : '<span style="color:var(--red);font-weight:700">🔥 OFFEN</span>';
     return `<div style="display:flex;justify-content:space-between;align-items:center;padding:12px;background:var(--bg-surface);border:1px solid var(--border);margin-bottom:8px;border-radius:4px;gap:12px;flex-wrap:wrap">
       <div>
         <div style="font-weight:800;font-size:0.9rem">FAG-TAX RECHNUNG KW ${kw} (${range})</div>
-        <div style="font-size:0.75rem;color:var(--text-dim);margin-top:2px">Gesamtbetrag: <strong style="color:var(--red)">${total.toFixed(2).replace('.', ',')}€</strong> • Status: ${paidBadge}</div>
+        <div style="font-size:0.75rem;color:var(--text-dim);margin-top:2px">Rechnungsbetrag: <strong style="color:var(--red)">${total.toFixed(2).replace('.', ',')}€</strong> • Status: ${paidBadge}</div>
       </div>
       <div class="card-actions-responsive">
         <button class="btn btn--sm btn--cyan btn-download-sub-pdf" data-ftid="${ft.id}">📄 RECHNUNG ALS PDF HERUNTERLADEN</button>
