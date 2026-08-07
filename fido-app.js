@@ -4068,90 +4068,102 @@ function openLoanContractModal() {
   `;
 
   showModal('📜 DARLEHENSVERTRAG ABSCHLIESSEN', bodyHTML, 'VERTRAG JETZT ABSCHLIESSEN', async () => {
-    const amtInput = document.getElementById('loan-amount-input');
-    const rhythmInput = document.getElementById('loan-rhythm');
-    const rateInput = document.getElementById('loan-rate-input');
-    const nameInput = document.getElementById('loan-fullname');
-    const addressInput = document.getElementById('loan-address');
-    const ibanInput = document.getElementById('loan-iban');
-    const agreeInput = document.getElementById('loan-inkasso-agree');
-
-    if (!amtInput || !nameInput || !addressInput || !agreeInput) {
-      console.warn('Form fields missing during submission');
-      return false;
-    }
-
-    const amt = parseFloat(amtInput.value) || 0;
-    const rhythm = rhythmInput ? rhythmInput.value : 'weekly';
-    const rate = parseFloat(rateInput ? rateInput.value : 0) || 0;
-    const name = nameInput.value.trim();
-    const address = addressInput.value.trim();
-    const iban = ibanInput ? ibanInput.value.trim() : '';
-    const agree = agreeInput.checked;
-
-    if (!agree || !name || !address || amt <= 0) {
-      showAlert('FEHLER', 'Bitte fülle alle Pflichtfelder aus (Name, Adresse, Betrag > 0) und akzeptiere die Inkasso-Vereinbarung.');
-      return false;
-    }
-
-    let addonsSum = 0;
-    const addons = [];
-    qsa('.loan-addon:checked').forEach(cb => {
-      const c = parseFloat(cb.dataset.cost) || 0;
-      addonsSum += c;
-      addons.push({ title: cb.dataset.title, cost: c });
-    });
-
-    const weeklyInterest = round2(amt * 0.10);
-    const curSubId = currentUser.id || currentUser.uid || 'sub';
-    const contractData = {
-      subId: curSubId,
-      username: currentUser.username || 'sub',
-      displayName: name,
-      address, iban,
-      principal: amt,
-      weeklyInterestRate: 0.10,
-      weeklyInterestAmount: weeklyInterest,
-      rhythm,
-      installmentRate: rate,
-      addons,
-      addonsSum,
-      inkassoAgreed: true,
-      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-      status: 'active'
-    };
-
-    let refId = 'lnc_' + Date.now();
     try {
-      if (db) {
-        const ref = await db.collection('loanContracts').add(contractData);
-        refId = ref.id;
+      const amtInput = document.getElementById('loan-amount-input');
+      const rhythmInput = document.getElementById('loan-rhythm');
+      const rateInput = document.getElementById('loan-rate-input');
+      const nameInput = document.getElementById('loan-fullname');
+      const addressInput = document.getElementById('loan-address');
+      const ibanInput = document.getElementById('loan-iban');
+      const agreeInput = document.getElementById('loan-inkasso-agree');
+
+      if (!amtInput || !nameInput || !addressInput || !agreeInput) {
+        console.warn('Form fields missing during submission');
+        return false;
       }
-    } catch (e) {
-      console.error('Firestore loanContracts write error:', e);
-    }
 
-    // Always append locally to ensure UI updates immediately
-    const fullContract = { id: refId, ...contractData };
-    if (!loanContracts.some(l => l.id === refId)) {
-      loanContracts.push(fullContract);
-    }
+      const amt = parseFloat(amtInput.value) || 0;
+      const rhythm = rhythmInput ? rhythmInput.value : 'weekly';
+      const rate = parseFloat(rateInput ? rateInput.value : 0) || 0;
+      const name = nameInput.value.trim();
+      const address = addressInput.value.trim();
+      const iban = ibanInput ? ibanInput.value.trim() : '';
+      const agree = agreeInput.checked;
 
-    // Dual-sync to sub document to bypass collection rule restrictions
-    if (curSubId && db) {
-      db.collection('subs').doc(curSubId).set({
-        loanContractsArr: firebase.firestore.FieldValue.arrayUnion(fullContract)
-      }, { merge: true }).catch(() => {});
-    }
+      if (!agree || !name || !address || amt <= 0) {
+        showAlert('FEHLER', 'Bitte fülle alle Pflichtfelder aus (Name, Adresse, Betrag > 0) und akzeptiere die Inkasso-Vereinbarung.');
+        return false;
+      }
 
-    showToast('Darlehensvertrag erfolgreich abgeschlossen! 📜', 'success');
-    if (currentUser.role === 'dom') renderDomLoansOverview();
-    else renderSubLoansView();
+      let addonsSum = 0;
+      const addons = [];
+      qsa('.loan-addon:checked').forEach(cb => {
+        const c = parseFloat(cb.dataset.cost) || 0;
+        addonsSum += c;
+        addons.push({ title: cb.dataset.title, cost: c });
+      });
 
-    try {
-      generateLoanContractPDF(fullContract);
-    } catch (pdfErr) {
-      console.warn('PDF generation notice:', pdfErr);
+      const weeklyInterest = round2(amt * 0.10);
+      const curSubId = currentUser.id || currentUser.uid || 'sub';
+      const contractData = {
+        subId: curSubId,
+        username: currentUser.username || 'sub',
+        displayName: name,
+        address, iban,
+        principal: amt,
+        weeklyInterestRate: 0.10,
+        weeklyInterestAmount: weeklyInterest,
+        rhythm,
+        installmentRate: rate,
+        addons,
+        addonsSum,
+        inkassoAgreed: true,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+        status: 'active'
+      };
+
+      let refId = 'lnc_' + Date.now();
+      try {
+        if (db) {
+          const ref = await db.collection('loanContracts').add(contractData);
+          refId = ref.id;
+        }
+      } catch (e) {
+        console.error('Firestore loanContracts write error:', e);
+      }
+
+      // Always append locally to ensure UI updates immediately
+      const fullContract = { id: refId, ...contractData };
+      if (!loanContracts.some(l => l.id === refId)) {
+        loanContracts.push(fullContract);
+      }
+
+      // Dual-sync to sub document to bypass collection rule restrictions
+      if (curSubId && db) {
+        db.collection('subs').doc(curSubId).set({
+          loanContractsArr: firebase.firestore.FieldValue.arrayUnion(fullContract)
+        }, { merge: true }).catch(() => {});
+      }
+
+      hideModal();
+
+      showToast('Darlehensvertrag erfolgreich abgeschlossen! 📜', 'success');
+      if (currentUser.role === 'dom') renderDomLoansOverview();
+      else renderSubLoansView();
+
+      setTimeout(() => {
+        try {
+          generateLoanContractPDF(fullContract);
+        } catch (pdfErr) {
+          console.warn('PDF generation notice:', pdfErr);
+        }
+      }, 100);
+
+      return true;
+    } catch (err) {
+      console.error('Error in openLoanContractModal:', err);
+      showAlert('FEHLER', 'Fehler beim Abschließen des Darlehensvertrags: ' + (err.message || err));
+      return false;
     }
   });
 
@@ -4234,12 +4246,30 @@ function generateLoanContractPDF(c) {
   </div>
 </body></html>`;
 
-  const w = window.open('', '_blank');
-  if (w) { w.document.write(html); w.document.close(); }
+  try {
+    const w = window.open('', '_blank');
+    if (w && !w.closed) {
+      w.document.write(html);
+      w.document.close();
+    } else {
+      // Fallback for pop-up blocker
+      showModal('📜 DARLEHENSVERTRAG ' + contractId, `
+        <div style="max-height:55vh;overflow-y:auto;background:#fff;color:#000;padding:16px;border-radius:4px">
+          ${html.replace(/<!DOCTYPE html>[\s\S]*?<body[^>]*>/i, '').replace(/<\/body>[\s\S]*/i, '')}
+        </div>
+        <p style="font-size:0.75rem;color:var(--orange);margin-top:8px">💡 Tipp: Erlaube Pop-ups im Browser für automatisches Drucken.</p>
+      `, '📄 NEUES FENSTER ÖFFNEN', () => {
+        const win = window.open();
+        if (win) { win.document.write(html); win.document.close(); }
+      }, 'SCHLIESSEN');
+    }
+  } catch (e) {
+    console.warn('Window open fallback triggered:', e);
+  }
 }
 
 // --- DOM UNIFIED PAYMENT BOOKING (CUSTOM DATE, SUB & PURPOSE) ---
-function openManualPaymentModal(defaultSubId = '', defaultCategory = 'tribut', defaultDesc = '', defaultAmt = '') {
+function openManualPaymentModal(defaultSubId = '', defaultCategory = 'tribut', defaultDesc = '', defaultAmt = '', defaultLoanId = '') {
   const card = document.getElementById('payment-booking-card');
   if (card) {
     card.scrollIntoView({ behavior: 'smooth' });
@@ -4253,6 +4283,12 @@ function openManualPaymentModal(defaultSubId = '', defaultCategory = 'tribut', d
   if (defaultCategory && inputCategory) inputCategory.value = defaultCategory;
   if (defaultAmt && inputAmount) inputAmount.value = defaultAmt;
   if (defaultDesc && inputDescription) inputDescription.value = defaultDesc;
+
+  // Trigger loan dropdown update and select specified loan
+  updateLoanSelectVisibility();
+  if (defaultLoanId && inputLoan) {
+    inputLoan.value = defaultLoanId;
+  }
 
   const nowISO = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16);
   if (inputDate) inputDate.value = nowISO;
@@ -4423,6 +4459,49 @@ function renderDomWheelOverview() {
   });
 }
 
+async function deleteLoanContract(loanId) {
+  const lc = loanContracts.find(l => l.id === loanId);
+  const subName = lc ? (lc.displayName || lc.username) : 'Sau';
+  const displayId = loanId.slice(0, 6).toUpperCase();
+
+  const confirmed = await showConfirm(
+    '🗑 DARLEHENSVERTRAG LÖSCHEN',
+    `Möchtest du den Darlehensvertrag #${displayId} von "${subName}" wirklich unwiderruflich löschen?`
+  );
+  if (!confirmed) return;
+
+  try {
+    if (db) {
+      await db.collection('loanContracts').doc(loanId).delete().catch(err => {
+        console.warn('Firestore loanContracts doc delete warning:', err);
+      });
+
+      if (lc && lc.subId) {
+        try {
+          const subDocRef = db.collection('subs').doc(lc.subId);
+          const subDoc = await subDocRef.get();
+          if (subDoc.exists) {
+            const arr = subDoc.data().loanContractsArr || [];
+            const updatedArr = arr.filter(item => item.id !== loanId);
+            await subDocRef.set({ loanContractsArr: updatedArr }, { merge: true });
+          }
+        } catch (subErr) {
+          console.warn('Sub document loanContractsArr update notice:', subErr);
+        }
+      }
+    }
+
+    loanContracts = loanContracts.filter(l => l.id !== loanId);
+
+    showToast(`Darlehensvertrag #${displayId} gelöscht!`, 'info');
+    if (currentUser && currentUser.role === 'dom') renderDomLoansOverview();
+    else renderSubLoansView();
+  } catch (e) {
+    console.error('Error deleting loan contract:', e);
+    showToast('Fehler beim Löschen des Darlehensvertrags', 'error');
+  }
+}
+
 function renderDomLoansOverview() {
   const el = document.getElementById('dom-loans-overview');
   if (!el) return;
@@ -4462,6 +4541,7 @@ function renderDomLoansOverview() {
           <div style="display:flex;gap:6px;flex-wrap:wrap">
             <button class="btn btn--sm btn--primary btn-dom-loan-pay" data-subid="${lc.subId || ''}" data-lcid="${lc.id}" data-rate="${lc.installmentRate}">💳 RATENEINGANG BUCHEN</button>
             <button class="btn btn--sm btn--cyan btn-download-loan-pdf" data-lcid="${lc.id}">📄 PDF</button>
+            <button class="btn btn--sm btn--danger btn-delete-loan-contract" data-lcid="${lc.id}">🗑 LÖSCHEN</button>
           </div>
         </div>
       </div>
@@ -4470,7 +4550,7 @@ function renderDomLoansOverview() {
 
   qsa('.btn-dom-loan-pay').forEach(btn => {
     btn.onclick = () => {
-      openManualPaymentModal(btn.dataset.subid, 'darlehen', `Darlehens-Ratenzahlung #${btn.dataset.lcid.slice(0,6)}`, btn.dataset.rate);
+      openManualPaymentModal(btn.dataset.subid, 'darlehen', `Darlehens-Ratenzahlung #${btn.dataset.lcid.slice(0,6)}`, btn.dataset.rate, btn.dataset.lcid);
     };
   });
 
@@ -4479,6 +4559,10 @@ function renderDomLoansOverview() {
       const lc = loanContracts.find(l => l.id === btn.dataset.lcid);
       if (lc) generateLoanContractPDF(lc);
     };
+  });
+
+  qsa('.btn-delete-loan-contract').forEach(btn => {
+    btn.onclick = () => deleteLoanContract(btn.dataset.lcid);
   });
 }
 
@@ -5354,6 +5438,41 @@ function openCreateShopItemModal() {
   }
 }
 
+async function deleteShopItem(itemId) {
+  const item = shopItems.find(i => i.id === itemId);
+  if (!item) return;
+
+  const confirmed = await showConfirm(
+    '🗑 ARTIKEL LÖSCHEN',
+    `Möchtest du den Artikel "${item.title}" und alle zugehörigen Gebote wirklich unwiderruflich löschen?`
+  );
+  if (!confirmed) return;
+
+  try {
+    if (db) {
+      // Delete shop item document
+      await db.collection('shopItems').doc(itemId).delete();
+
+      // Delete associated bids
+      const bidsToDelete = shopBids.filter(b => b.itemId === itemId);
+      for (const b of bidsToDelete) {
+        if (b.id) {
+          await db.collection('shopBids').doc(b.id).delete().catch(() => {});
+        }
+      }
+    }
+    // Update local state fallback
+    shopItems = shopItems.filter(i => i.id !== itemId);
+    shopBids = shopBids.filter(b => b.itemId !== itemId);
+
+    showToast(`Artikel "${item.title}" gelöscht!`, 'info');
+    renderDomShopOverview();
+  } catch (e) {
+    console.error('Error deleting shop item:', e);
+    showToast('Fehler beim Löschen des Artikels', 'error');
+  }
+}
+
 function renderDomShopOverview() {
   const el = document.getElementById('dom-shop-overview');
   if (!el) return;
@@ -5372,7 +5491,10 @@ function renderDomShopOverview() {
         <div style="display:flex;gap:10px;align-items:flex-start">
           ${item.imageUrl ? `<img src="${item.imageUrl}" style="width:70px;height:70px;object-fit:cover;border:1px solid var(--red);border-radius:4px">` : ''}
           <div style="flex:1">
-            <div style="font-weight:900;font-size:0.95rem;color:var(--text)">${escapeHtml(item.title)}</div>
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+              <div style="font-weight:900;font-size:0.95rem;color:var(--text)">${escapeHtml(item.title)}</div>
+              <button class="btn btn--sm btn--danger btn-delete-shop-item" data-itemid="${item.id}" style="padding:3px 8px;font-size:0.7rem">🗑 LÖSCHEN</button>
+            </div>
             <div style="font-size:0.75rem;color:var(--text-dim);margin-top:2px">${escapeHtml(item.description)}</div>
             <div style="font-size:0.75rem;color:var(--purple);margin-top:4px;font-weight:700">
               Mindestgebot: ${item.minBid}€ • Versand: +${shipping.toFixed(2)}€ • Top-Gebot: <strong style="color:var(--green);font-size:0.85rem">${highestBid > 0 ? highestBid.toFixed(2) + '€' : 'Keine Gebote'}</strong>
@@ -5396,6 +5518,10 @@ function renderDomShopOverview() {
     `;
   }).join('');
 
+  qsa('.btn-delete-shop-item').forEach(btn => {
+    btn.onclick = () => deleteShopItem(btn.dataset.itemid);
+  });
+
   qsa('.btn-accept-bid').forEach(btn => {
     btn.onclick = async () => {
       const bid = shopBids.find(b => b.id === btn.dataset.bidid);
@@ -5414,17 +5540,58 @@ function renderDomShopOverview() {
 function renderSubShopOverview() {
   const el = document.getElementById('sub-shop-overview');
   if (!el || !currentUser) return;
+  const curSubId = currentUser.id || currentUser.uid;
+
+  const myBids = shopBids.filter(b => b.subId === curSubId || b.subId === currentUser.id || b.subId === currentUser.uid || b.username === currentUser.username);
+
+  let html = '';
+
+  // Summary Card for Sub Bids
+  if (myBids.length > 0) {
+    html += `
+      <div style="margin-bottom:16px;padding:12px;background:var(--bg-surface);border:1.5px dashed var(--purple);border-radius:6px">
+        <div style="font-weight:900;font-size:0.85rem;color:var(--purple);margin-bottom:8px;display:flex;justify-content:space-between;align-items:center">
+          <span>📋 DEINE ABGEGEBENEN BLIND-GEBOTE (${myBids.length})</span>
+          <span style="font-size:0.7rem;color:var(--green)">🟢 AKTIV</span>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          ${myBids.map(b => {
+            const item = shopItems.find(i => i.id === b.itemId);
+            const title = item ? item.title : 'Shop-Artikel';
+            const shipping = item && item.shippingCost !== undefined ? item.shippingCost : 4.99;
+            const total = (b.bidAmount || 0) + shipping;
+            const isAccepted = b.status === 'accepted';
+            return `
+              <div style="display:flex;justify-content:space-between;align-items:center;padding:8px;background:var(--bg-card);border:1px solid ${isAccepted ? 'var(--green)' : 'var(--border)'};border-radius:4px;font-size:0.75rem;flex-wrap:wrap;gap:4px">
+                <div>
+                  <strong style="color:var(--text);font-size:0.85rem">${escapeHtml(title)}</strong>
+                  <div style="color:var(--text-dim);font-size:0.75rem;margin-top:2px">Gebot: <strong style="color:var(--green)">${(b.bidAmount||0).toFixed(2)}€</strong> (+${shipping.toFixed(2)}€ Versand = <strong>${total.toFixed(2)}€</strong>)</div>
+                </div>
+                <div>
+                  ${isAccepted ? '<span style="color:var(--green);font-weight:900;padding:3px 8px;background:rgba(0,230,118,0.15);border:1px solid var(--green);border-radius:3px">✓ VOM HERRN AKZEPTIERT</span>' : '<span style="color:var(--orange);font-weight:700;padding:3px 8px;background:rgba(255,152,0,0.1);border-radius:3px">⏳ Wartet auf Entscheidung</span>'}
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </div>
+    `;
+  }
+
   if (shopItems.length === 0) {
-    el.innerHTML = '<p style="color:var(--text-dim);font-size:0.8rem;text-align:center">Aktuell keine Artikel in der Blind-Auktion.</p>';
+    html += '<p style="color:var(--text-dim);font-size:0.8rem;text-align:center">Aktuell keine Artikel in der Blind-Auktion.</p>';
+    el.innerHTML = html;
     return;
   }
 
-  el.innerHTML = shopItems.map(item => {
-    const myBid = shopBids.find(b => b.itemId === item.id && b.subId === currentUser.id);
+  html += shopItems.map(item => {
+    const myBid = shopBids.find(b => b.itemId === item.id && (b.subId === curSubId || b.subId === currentUser.id || b.subId === currentUser.uid || b.username === currentUser.username));
     const shipping = item.shippingCost !== undefined ? item.shippingCost : 4.99;
+    const hasBid = !!myBid;
 
     return `
-      <div style="padding:12px;background:var(--bg-surface);border:1px solid var(--border);margin-bottom:10px;border-radius:4px">
+      <div style="padding:12px;background:var(--bg-surface);border:${hasBid ? '1.5px solid var(--purple)' : '1px solid var(--border)'};margin-bottom:10px;border-radius:4px;box-shadow:${hasBid ? '0 0 12px rgba(187,134,252,0.2)' : 'none'}">
+        ${hasBid ? `<div style="display:inline-block;padding:3px 8px;background:var(--purple);color:#000;font-weight:900;font-size:0.7rem;border-radius:3px;margin-bottom:8px">🟢 DU HAST HIER GEBOTEN (${myBid.bidAmount.toFixed(2)}€)</div>` : ''}
         <div style="display:flex;gap:10px;align-items:flex-start">
           ${item.imageUrl ? `<img src="${item.imageUrl}" style="width:75px;height:75px;object-fit:cover;border:1px solid var(--red);border-radius:4px">` : ''}
           <div style="flex:1">
@@ -5437,7 +5604,19 @@ function renderSubShopOverview() {
         </div>
 
         <div style="margin-top:10px;padding-top:8px;border-top:1px dashed var(--border)">
-          ${myBid ? `<div style="font-size:0.75rem;color:var(--green);font-weight:700">Dein Blind-Gebot: <strong>${myBid.bidAmount}€</strong> (${myBid.status === 'accepted' ? '✓ VOM HERRN AKZEPTIERT!' : 'Wartet auf Entscheidung des Herrn'})</div>` : `
+          ${myBid ? `
+            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px">
+              <div style="font-size:0.75rem;color:var(--green);font-weight:700">
+                Dein Blind-Gebot: <strong style="font-size:0.9rem">${myBid.bidAmount.toFixed(2)}€</strong> (+${shipping.toFixed(2)}€ Versand = <strong>${((myBid.bidAmount||0)+shipping).toFixed(2)}€</strong>)
+                <div style="font-size:0.7rem;color:${myBid.status === 'accepted' ? 'var(--green)' : 'var(--orange)'};font-weight:800;margin-top:2px">
+                  ${myBid.status === 'accepted' ? '✓ VOM HERRN AKZEPTIERT & VERBUCHT!' : '⏳ Wartet auf Entscheidung des Herrn'}
+                </div>
+              </div>
+              ${myBid.status !== 'accepted' ? `
+                <button class="btn btn--sm btn--ghost btn-edit-bid" data-itemid="${item.id}" style="font-size:0.7rem">✎ GEBOT ERHÖHEN / ÄNDERN</button>
+              ` : ''}
+            </div>
+          ` : `
             <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
               <input type="number" class="sub-bid-input" data-itemid="${item.id}" placeholder="Dein Gebot €" min="${item.minBid}" style="width:130px;padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);font-size:0.8rem">
               <button class="btn btn--sm btn--primary btn-submit-bid" data-itemid="${item.id}">🔨 GEBOT ABGEBEN</button>
@@ -5448,21 +5627,67 @@ function renderSubShopOverview() {
     `;
   }).join('');
 
+  el.innerHTML = html;
+
   qsa('.btn-submit-bid').forEach(btn => {
     btn.onclick = async () => {
       const itemId = btn.dataset.itemid;
       const input = qs(`.sub-bid-input[data-itemid="${itemId}"]`);
-      const val = parseFloat(input.value) || 0;
+      const val = parseFloat(input ? input.value : 0) || 0;
       const item = shopItems.find(i => i.id === itemId);
       if (!item || val < item.minBid) {
-        showAlert('GEBOT UNGÜLTIG', `Dein Gebot muss mindestens ${item.minBid}€ betragen.`);
+        showAlert('GEBOT UNGÜLTIG', `Dein Gebot muss mindestens ${item ? item.minBid : 0}€ betragen.`);
         return;
       }
-      await db.collection('shopBids').add({
-        itemId, subId: currentUser.id, username: currentUser.username,
-        bidAmount: val, status: 'pending', createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      try {
+        await db.collection('shopBids').add({
+          itemId, subId: curSubId, username: currentUser.username || 'sub',
+          bidAmount: val, status: 'pending', createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        showToast('Blind-Gebot abgegeben! 🔨', 'success');
+        renderSubShopOverview();
+      } catch (e) {
+        console.error(e);
+        showToast('Fehler beim Abgeben des Gebots', 'error');
+      }
+    };
+  });
+
+  qsa('.btn-edit-bid').forEach(btn => {
+    btn.onclick = () => {
+      const itemId = btn.dataset.itemid;
+      const item = shopItems.find(i => i.id === itemId);
+      const myBid = shopBids.find(b => b.itemId === itemId && (b.subId === curSubId || b.subId === currentUser.id || b.subId === currentUser.uid || b.username === currentUser.username));
+      if (!item || !myBid) return;
+
+      const bodyHTML = `
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <p style="font-size:0.8rem;color:var(--text-secondary)">Passe dein Blind-Gebot für <strong>${escapeHtml(item.title)}</strong> an.</p>
+          <div>
+            <label style="font-size:0.7rem;color:var(--text-dim);font-weight:700">NEUES GEBOT (€) * (Mindestgebot: ${item.minBid}€)</label>
+            <input type="number" id="new-bid-amount-input" value="${myBid.bidAmount}" min="${item.minBid}" step="5" style="width:100%;padding:10px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);margin-top:4px">
+          </div>
+        </div>
+      `;
+
+      showModal('✎ BLIND-GEBOT ÄNDERN', bodyHTML, 'GEBOT JETZT AKTUALISIEREN', async () => {
+        const val = parseFloat(document.getElementById('new-bid-amount-input').value) || 0;
+        if (val < item.minBid) {
+          showAlert('FEHLER', `Das Gebot muss mindestens ${item.minBid}€ betragen.`);
+          return false;
+        }
+        try {
+          await db.collection('shopBids').doc(myBid.id).update({
+            bidAmount: val,
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+          });
+          showToast(`Gebot auf ${val.toFixed(2)}€ aktualisiert! 🔨`, 'success');
+          renderSubShopOverview();
+        } catch (e) {
+          console.error(e);
+          showToast('Fehler beim Aktualisieren des Gebots', 'error');
+        }
       });
-      showToast('Blind-Gebot abgegeben!', 'success');
     };
   });
 }
