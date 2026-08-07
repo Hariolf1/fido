@@ -4586,13 +4586,17 @@ function renderSubFagTaxInvoices() {
 // --- DARLEHENSVERTRAG (LOAN CONTRACT) ---
 function openLoanContractModal() {
   const subName = currentUser.displayName || currentUser.username;
+  const userAgentStr = navigator.userAgent || 'WebBrowser';
+  const nowISO = new Date().toISOString();
+
   const bodyHTML = `
     <form id="loan-wizard-form" style="display:flex;flex-direction:column;gap:12px">
-      <div style="background:rgba(255,23,68,0.1);border-left:4px solid var(--red);padding:8px 12px;font-size:0.75rem;color:var(--text-secondary)">
-        <strong style="color:var(--red)">RECHTSHINWEIS & SCHULDANERKENNTNIS (§ 781 BGB):</strong><br>
-        Durch den Abschluss dieses Vertrages unterwirfst du dich bedingungslos dem Darlehensvertrag sowie der sofortigen Zwangsvollstreckung und Gehaltsabtretung.
+      <div style="background:rgba(255,23,68,0.12);border-left:4px solid var(--red);padding:10px 12px;font-size:0.75rem;color:var(--text-secondary);border-radius:4px">
+        <strong style="color:var(--red);font-size:0.8rem">⚠️ SCHRITT 1: STAMMDATEN & SIGNATUR EINGEBEN (§ 488 / § 781 BGB):</strong><br>
+        Fülle hier deine Stammdaten aus und zeichne deine digitale Handschrift. Im Anschluss erfolgt die schrittweise rechtliche Unterwerfung unter die 5 gesetzlichen Vertragsklauseln.
       </div>
       
+      <!-- 1. BETRAG -->
       <div>
         <label style="font-size:0.7rem;color:var(--text-dim);font-weight:700">1. DARLEHENSBETRAG WÄHLEN (€)</label>
         <div style="display:flex;gap:6px;margin-top:4px;margin-bottom:6px;flex-wrap:wrap">
@@ -4605,11 +4609,13 @@ function openLoanContractModal() {
         <input type="number" id="loan-amount-input" value="100" min="10" max="5000" step="10" style="width:100%;padding:8px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text)">
       </div>
 
+      <!-- 2. ZINSEN -->
       <div>
-        <label style="font-size:0.7rem;color:var(--text-dim);font-weight:700">2. WOCHENZINSEN (AUTOMATISCH 10% / WOCHE)</label>
-        <div id="loan-interest-preview" style="font-size:0.85rem;color:var(--purple);font-weight:800;padding:6px;background:var(--bg-surface)">10,00€ Zinsen pro Woche</div>
+        <label style="font-size:0.7rem;color:var(--text-dim);font-weight:700">2. WOCHENZINSEN (VERTRAGLICH 10% / WOCHE)</label>
+        <div id="loan-interest-preview" style="font-size:0.85rem;color:var(--purple);font-weight:800;padding:8px;background:var(--bg-surface);border:1px solid var(--border);border-radius:4px">10,00€ Zinsen pro Woche</div>
       </div>
 
+      <!-- 3. RATEN -->
       <div>
         <label style="font-size:0.7rem;color:var(--text-dim);font-weight:700">3. RATENHÖHE & RHYTHMUS</label>
         <div style="display:flex;gap:8px">
@@ -4618,10 +4624,11 @@ function openLoanContractModal() {
             <option value="monthly_1">Monatlich (zum 1.)</option>
             <option value="monthly_15">Monatlich (zum 15.)</option>
           </select>
-          <input type="number" id="loan-rate-input" value="25" min="5" step="5" style="width:100px;padding:8px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text)" placeholder="Rate €">
+          <input type="number" id="loan-rate-input" value="25" min="5" step="5" style="width:110px;padding:8px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text)" placeholder="Rate €">
         </div>
       </div>
 
+      <!-- 4. GEBÜHREN -->
       <div>
         <label style="font-size:0.7rem;color:var(--text-dim);font-weight:700">4. DEVOTIONS-ZUSATZOPTIONEN & GEBÜHREN</label>
         <div style="display:flex;flex-direction:column;gap:6px;margin-top:4px">
@@ -4632,141 +4639,172 @@ function openLoanContractModal() {
         </div>
       </div>
 
-      <div>
-        <label style="font-size:0.7rem;color:var(--text-dim);font-weight:700">5. DARLEHENSNEHMER PERSONALDHALT & IBAN</label>
-        <input type="text" id="loan-fullname" value="${escapeHtml(subName)}" placeholder="Vollständiger Vor- und Nachname (Personalausweis)" required style="width:100%;padding:8px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);margin-top:4px">
-        <input type="text" id="loan-address" placeholder="Strasse, Hausnr, PLZ, Ort" required style="width:100%;padding:8px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);margin-top:4px">
-        <input type="text" id="loan-iban" placeholder="DE00 0000 0000 0000 0000 00 (IBAN für Lohn- & Sachpfändung)" required style="width:100%;padding:8px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);margin-top:4px">
+      <!-- 5. SCHULDNER PERSONALIEN -->
+      <div style="background:var(--bg-card);padding:10px;border:1px solid var(--border);border-radius:4px">
+        <label style="font-size:0.75rem;color:var(--red);font-weight:800;display:block;margin-bottom:6px">5. SCHULDNER-PERSONALIEN & TITULIERUNGSDATEN *</label>
+        
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+          <div>
+            <label style="font-size:0.65rem;color:var(--text-dim)">Vollständiger Name *</label>
+            <input type="text" id="loan-fullname" value="${escapeHtml(subName)}" placeholder="Vor- und Nachname" required style="width:100%;padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);font-size:0.8rem">
+          </div>
+          <div>
+            <label style="font-size:0.65rem;color:var(--text-dim)">Geburtsdatum & Geburtsort *</label>
+            <input type="text" id="loan-birthinfo" placeholder="TT.MM.JJJJ in Stadt" required style="width:100%;padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);font-size:0.8rem">
+          </div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px">
+          <div>
+            <label style="font-size:0.65rem;color:var(--text-dim)">Personalausweis- / Pass-ID *</label>
+            <input type="text" id="loan-idnum" placeholder="z.B. T22000123" required style="width:100%;padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);font-size:0.8rem">
+          </div>
+          <div>
+            <label style="font-size:0.65rem;color:var(--text-dim)">Arbeitgeber / Einkommensquelle *</label>
+            <input type="text" id="loan-employer" placeholder="Firma / Arbeitgeber (für Abtretung)" required style="width:100%;padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);font-size:0.8rem">
+          </div>
+        </div>
+
+        <div style="margin-top:6px">
+          <label style="font-size:0.65rem;color:var(--text-dim)">Vollständige Meldeadresse (Straße, Hausnr, PLZ, Ort) *</label>
+          <input type="text" id="loan-address" placeholder="Hauptstraße 1, 10115 Berlin" required style="width:100%;padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);font-size:0.8rem">
+        </div>
+
+        <div style="margin-top:6px">
+          <label style="font-size:0.65rem;color:var(--text-dim)">IBAN (Bankverbindung für Pfändung & Abtretung) *</label>
+          <input type="text" id="loan-iban" placeholder="DE00 0000 0000 0000 0000 00" required style="width:100%;padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);font-size:0.8rem">
+        </div>
       </div>
 
-      <div style="padding:10px;background:#2a0000;border:1px solid var(--red);margin-top:6px;display:flex;flex-direction:column;gap:6px">
-        <label style="display:flex;align-items:flex-start;gap:8px;font-size:0.72rem;color:#fff;cursor:pointer">
-          <input type="checkbox" id="loan-schuld-agree" required style="margin-top:2px">
-          <span><strong>§ 781 BGB ABSTRAKTES SCHULDANERKENNTNIS:</strong> Ich anerkenne hiermit unwiderruflich und konstitutiv die obige Gesamtschuldsumme nebst wöchentlicher Zinsen als persönliche Verbindlichkeit gegenüber dem HERRN.</span>
-        </label>
-        <label style="display:flex;align-items:flex-start;gap:8px;font-size:0.72rem;color:#fff;cursor:pointer">
-          <input type="checkbox" id="loan-abtretung-agree" required style="margin-top:2px">
-          <span><strong>§ 398 BGB GEHALTSABTRETUNG:</strong> Ich trete hiermit für den Fall des Zahlungsverzugs meinen pfändbaren Teil des Gegenwärtigen und zukünftigen Arbeitseinkommens sowie etwaige Sachwerte unwiderruflich an den Gläubiger ab.</span>
-        </label>
-        <label style="display:flex;align-items:flex-start;gap:8px;font-size:0.72rem;color:#fff;cursor:pointer">
-          <input type="checkbox" id="loan-inkasso-agree" required style="margin-top:2px">
-          <span><strong>SOFORTIGE INKASSO-ÜBERMITTLUNG (§ 794 ZPO):</strong> Ich willige ein, dass bei Verzug ab Tag 1 die Forderung sofort und kostenpflichtig an ein Inkassosyndikat zum Forderungsverkauf übergeben werden darf.</span>
-        </label>
+      <!-- 6. HANDSCHRIFTLICHE DIGITALE UNTERSCHRIFT -->
+      <div style="background:var(--bg-card);padding:10px;border:1px solid var(--border);border-radius:4px;text-align:center">
+        <label style="font-size:0.75rem;color:var(--red);font-weight:800;display:block;margin-bottom:4px">6. HANDSCHRIFTLICHE DIGITALE UNTERSCHRIFT *</label>
+        <p style="font-size:0.68rem;color:var(--text-dim);margin-bottom:6px">Zeichne hier deine eigenhändige Unterschrift auf dem Feld:</p>
+        <div style="position:relative;display:inline-block;width:100%;max-width:380px">
+          <canvas id="loan-sig-canvas" width="380" height="110" style="border:1.5px dashed var(--red);background:#08080d;width:100%;height:110px;touch-action:none;cursor:crosshair;border-radius:4px"></canvas>
+          <button type="button" id="btn-clear-sig" class="btn btn--sm btn--ghost" style="position:absolute;top:4px;right:4px;font-size:0.6rem;padding:2px 6px;background:rgba(0,0,0,0.6)">🗑 LÖSCHEN</button>
+        </div>
       </div>
     </form>
   `;
 
-  showModal('📜 DARLEHENSVERTRAG ABSCHLIESSEN', bodyHTML, 'VERTRAG JETZT ABSCHLIESSEN', async () => {
-    try {
-      const amtInput = document.getElementById('loan-amount-input');
-      const rhythmInput = document.getElementById('loan-rhythm');
-      const rateInput = document.getElementById('loan-rate-input');
-      const nameInput = document.getElementById('loan-fullname');
-      const addressInput = document.getElementById('loan-address');
-      const ibanInput = document.getElementById('loan-iban');
-      const agreeSchuld = document.getElementById('loan-schuld-agree');
-      const agreeAbtretung = document.getElementById('loan-abtretung-agree');
-      const agreeInkasso = document.getElementById('loan-inkasso-agree');
+  let hasSigned = false;
 
-      if (!amtInput || !nameInput || !addressInput || !agreeInkasso) {
-        console.warn('Form fields missing during submission');
-        return false;
-      }
+  showModal('📜 SCHRITT 1/6: DATEN & UNTERSCHRIFT EINGEBEN', bodyHTML, 'WEITER ZUR RECHTLICHEN UNTERWERFUNG (5 KLAUSELN) ➔', async () => {
+    const amtInput = document.getElementById('loan-amount-input');
+    const rhythmInput = document.getElementById('loan-rhythm');
+    const rateInput = document.getElementById('loan-rate-input');
+    const nameInput = document.getElementById('loan-fullname');
+    const birthInput = document.getElementById('loan-birthinfo');
+    const idNumInput = document.getElementById('loan-idnum');
+    const employerInput = document.getElementById('loan-employer');
+    const addressInput = document.getElementById('loan-address');
+    const ibanInput = document.getElementById('loan-iban');
 
-      const amt = parseFloat(amtInput.value) || 0;
-      const rhythm = rhythmInput ? rhythmInput.value : 'weekly';
-      const rate = parseFloat(rateInput ? rateInput.value : 0) || 0;
-      const name = nameInput.value.trim();
-      const address = addressInput.value.trim();
-      const iban = ibanInput ? ibanInput.value.trim() : '';
+    if (!amtInput || !nameInput || !addressInput) return false;
 
-      if (!agreeSchuld?.checked || !agreeAbtretung?.checked || !agreeInkasso?.checked || !name || !address || amt <= 0) {
-        showAlert('FEHLER', 'Bitte fülle alle Pflichtfelder aus und akzeptiere alle 3 Rechts- & Abtretungsklauseln (§ 781, § 398 BGB, § 794 ZPO).');
-        return false;
-      }
+    const amt = parseFloat(amtInput.value) || 0;
+    const rhythm = rhythmInput ? rhythmInput.value : 'weekly';
+    const rate = parseFloat(rateInput ? rateInput.value : 0) || 0;
+    const name = nameInput.value.trim();
+    const birthinfo = birthInput ? birthInput.value.trim() : '';
+    const idnum = idNumInput ? idNumInput.value.trim() : '';
+    const employer = employerInput ? employerInput.value.trim() : '';
+    const address = addressInput.value.trim();
+    const iban = ibanInput ? ibanInput.value.trim() : '';
 
-      let addonsSum = 0;
-      const addons = [];
-      qsa('.loan-addon:checked').forEach(cb => {
-        const c = parseFloat(cb.dataset.cost) || 0;
-        addonsSum += c;
-        addons.push({ title: cb.dataset.title, cost: c });
-      });
-
-      const weeklyInterest = round2(amt * 0.10);
-      const curSubId = currentUser.id || currentUser.uid || 'sub';
-      const contractData = {
-        subId: curSubId,
-        username: currentUser.username || 'sub',
-        displayName: name,
-        address, iban,
-        principal: amt,
-        weeklyInterestRate: 0.10,
-        weeklyInterestAmount: weeklyInterest,
-        rhythm,
-        installmentRate: rate,
-        addons,
-        addonsSum,
-        schuldAnerkannt: true,
-        abtretungAgreed: true,
-        inkassoAgreed: true,
-        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-        status: 'active'
-      };
-
-      let refId = 'lnc_' + Date.now();
-      try {
-        if (db) {
-          const ref = await db.collection('loanContracts').add(contractData);
-          refId = ref.id;
-        }
-      } catch (e) {
-        console.error('Firestore loanContracts write error:', e);
-      }
-
-      // Always append locally to ensure UI updates immediately
-      const fullContract = { id: refId, ...contractData };
-      if (!loanContracts.some(l => l.id === refId)) {
-        loanContracts.push(fullContract);
-      }
-
-      // Dual-sync to sub document to bypass collection rule restrictions
-      if (curSubId && db) {
-        db.collection('subs').doc(curSubId).set({
-          loanContractsArr: firebase.firestore.FieldValue.arrayUnion(fullContract)
-        }, { merge: true }).catch(() => {});
-      }
-
-      hideModal();
-
-      showToast('Darlehensvertrag & Schuldanerkenntnis unterzeichnet! 📜', 'success');
-      if (currentUser.role === 'dom') renderDomLoansOverview();
-      else renderSubLoansView();
-
-      setTimeout(() => {
-        try {
-          generateLoanContractPDF(fullContract);
-        } catch (pdfErr) {
-          console.warn('PDF generation notice:', pdfErr);
-        }
-      }, 100);
-
-      return true;
-    } catch (err) {
-      console.error('Error in openLoanContractModal:', err);
-      showAlert('FEHLER', 'Fehler beim Abschließen des Darlehensvertrags: ' + (err.message || err));
+    if (!name || !address || amt <= 0 || !birthinfo || !idnum || !employer || !iban) {
+      showAlert('FEHLER', 'Bitte fülle alle Pflichtfelder (Name, Geburtsdaten, Ausweis-ID, Arbeitgeber, Anschrift, IBAN) aus!');
       return false;
     }
+
+    if (!hasSigned) {
+      showAlert('FEHLER', 'Bitte zeichne deine digitale Handschrift auf dem Unterschriftenfeld!');
+      return false;
+    }
+
+    const sigCanvas = document.getElementById('loan-sig-canvas');
+    const signatureDataUrl = sigCanvas ? sigCanvas.toDataURL('image/png') : '';
+
+    let addonsSum = 0;
+    const addons = [];
+    qsa('.loan-addon:checked').forEach(cb => {
+      const c = parseFloat(cb.dataset.cost) || 0;
+      addonsSum += c;
+      addons.push({ title: cb.dataset.title, cost: c });
+    });
+
+    const weeklyInterest = round2(amt * 0.10);
+    const initialTotal = amt + addonsSum;
+
+    // Start Sequential Clause Confirmation Wizard
+    setTimeout(() => {
+      startSequentialClauseWizard({
+        amt, rhythm, rate, name, birthinfo, idnum, employer, address, iban,
+        signatureDataUrl, addons, addonsSum, weeklyInterest, initialTotal, userAgentStr, nowISO
+      });
+    }, 100);
+
+    return true;
   });
 
-  // Prevent default HTML form submission if Enter key is pressed inside modal inputs
-  const loanForm = document.getElementById('loan-wizard-form');
-  if (loanForm) {
-    loanForm.onsubmit = (e) => {
+  // Attach Canvas Signature Listeners
+  const sigCanvas = document.getElementById('loan-sig-canvas');
+  if (sigCanvas) {
+    const ctx = sigCanvas.getContext('2d');
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = '#ff1744';
+
+    let isDrawing = false;
+    let lastX = 0, lastY = 0;
+
+    function getPos(e) {
+      const rect = sigCanvas.getBoundingClientRect();
+      const clientX = e.touches && e.touches.length ? e.touches[0].clientX : e.clientX;
+      const clientY = e.touches && e.touches.length ? e.touches[0].clientY : e.clientY;
+      return {
+        x: (clientX - rect.left) * (sigCanvas.width / rect.width),
+        y: (clientY - rect.top) * (sigCanvas.height / rect.height)
+      };
+    }
+
+    function startDraw(e) {
+      isDrawing = true;
+      hasSigned = true;
+      const pos = getPos(e);
+      lastX = pos.x; lastY = pos.y;
+    }
+
+    function draw(e) {
+      if (!isDrawing) return;
       e.preventDefault();
-      const confirmBtn = document.getElementById('modal-confirm');
-      if (confirmBtn) confirmBtn.click();
-    };
+      const pos = getPos(e);
+      ctx.beginPath();
+      ctx.moveTo(lastX, lastY);
+      ctx.lineTo(pos.x, pos.y);
+      ctx.stroke();
+      lastX = pos.x; lastY = pos.y;
+    }
+
+    function stopDraw() { isDrawing = false; }
+
+    sigCanvas.addEventListener('mousedown', startDraw);
+    sigCanvas.addEventListener('mousemove', draw);
+    sigCanvas.addEventListener('mouseup', stopDraw);
+    sigCanvas.addEventListener('mouseleave', stopDraw);
+
+    sigCanvas.addEventListener('touchstart', startDraw, { passive: false });
+    sigCanvas.addEventListener('touchmove', draw, { passive: false });
+    sigCanvas.addEventListener('touchend', stopDraw);
+
+    const clearBtn = document.getElementById('btn-clear-sig');
+    if (clearBtn) {
+      clearBtn.onclick = () => {
+        ctx.clearRect(0, 0, sigCanvas.width, sigCanvas.height);
+        hasSigned = false;
+      };
+    }
   }
 
   const amtInput = document.getElementById('loan-amount-input');
@@ -4779,6 +4817,176 @@ function openLoanContractModal() {
   qsa('.btn-loan-preset').forEach(b => {
     b.onclick = () => { if (amtInput) { amtInput.value = b.dataset.val; updateInterest(); } };
   });
+}
+
+function startSequentialClauseWizard(data) {
+  // Step 1/5: § 488 BGB Darlehensvertrag
+  showModal(
+    '📜 RECHTSKLAUSEL 1 VON 5 (§ 488 BGB)',
+    `
+      <div style="padding:12px;background:#1a0005;border:1px solid var(--red);border-radius:4px;color:#fff">
+        <h4 style="color:var(--red);margin-bottom:8px">§ 488 BGB ABSCHLUSS DES DARLEHENSVERTRAGS</h4>
+        <p style="font-size:0.85rem;line-height:1.4">
+          Ich, <strong>${escapeHtml(data.name)}</strong>, verlange hiermit ausdrücklich den Abschluss dieses privaten Darlehensvertrages über <strong>${data.amt.toFixed(2)}€</strong> (Initiale Gesamtschuld nebst Gebühren: <strong>${data.initialTotal.toFixed(2)}€</strong>) mit einem vertraglichen Wochenzins von <strong>10,00 % p.w. (${data.weeklyInterest.toFixed(2)}€/Woche)</strong>. Ich verpflichte mich unwiderruflich zur vollständigen Tilgung nebst Kosten und Zinsen.
+        </p>
+      </div>
+    `,
+    'JA, ICH BESTÄTIGE UND SCHLIESSE AB ➔',
+    () => {
+      // Step 2/5: § 781 BGB Konstitutives Schuldanerkenntnis
+      setTimeout(() => {
+        showModal(
+          '📜 RECHTSKLAUSEL 2 VON 5 (§ 781 BGB)',
+          `
+            <div style="padding:12px;background:#1a0005;border:1px solid var(--red);border-radius:4px;color:#fff">
+              <h4 style="color:var(--red);margin-bottom:8px">§ 781 BGB KONSTITUTIVES SCHULDANERKENNTNIS</h4>
+              <p style="font-size:0.85rem;line-height:1.4">
+                Ich anerkenne hiermit ausdrücklich, unwiderruflich, konstitutiv und selbstständig die obige Gesamtschuldsumme von <strong>${data.initialTotal.toFixed(2)}€</strong> nebst aller fortlaufenden Verzugszinsen und Gebühren als vollstreckbare persönliche Verbindlichkeit gegenüber dem HERRN.
+              </p>
+            </div>
+          `,
+          'JA, ICH ERKENNE DIE SCHULD UNWIDERRUFLICH AN ➔',
+          () => {
+            // Step 3/5: § 398 BGB Gehalts- & Kontenabtretung
+            setTimeout(() => {
+              showModal(
+                '📜 RECHTSKLAUSEL 3 VON 5 (§ 398 BGB)',
+                `
+                  <div style="padding:12px;background:#1a0005;border:1px solid var(--red);border-radius:4px;color:#fff">
+                    <h4 style="color:var(--red);margin-bottom:8px">§ 398 BGB GEHALTS- & KONTENABTRETUNG</h4>
+                    <p style="font-size:0.85rem;line-height:1.4">
+                      Ich trete für den Fall des Zahlungsverzugs meine gegenwärtigen und zukünftigen Ansprüche auf Arbeitseinkommen bei meinem Arbeitgeber (<strong>${escapeHtml(data.employer)}</strong>) sowie Bankguthaben auf meiner IBAN (<strong>${escapeHtml(data.iban)}</strong>) unter Beachtung der Pfändungsfreigrenzen (§ 850c ZPO) hiermit unwiderruflich an den Gläubiger ab.
+                    </p>
+                  </div>
+                `,
+                'JA, ICH TRETE MEIN GEHALT BEI VERZUG AB ➔',
+                () => {
+                  // Step 4/5: § 138 BGB Freie Willenserklärung & Wuchereinrede-Verzicht
+                  setTimeout(() => {
+                    showModal(
+                      '📜 RECHTSKLAUSEL 4 VON 5 (§ 138 BGB)',
+                      `
+                        <div style="padding:12px;background:#1a0005;border:1px solid var(--red);border-radius:4px;color:#fff">
+                          <h4 style="color:var(--red);margin-bottom:8px">§ 138 BGB WUCHEREINREDE-VERZICHT & KINK-ERKLÄRUNG</h4>
+                          <p style="font-size:0.85rem;line-height:1.4">
+                            Ich erkläre an Eides statt, in voller Geschäftsfähigkeit und <strong>OHNE Vorliegen einer Notlage, Zwangslage oder finanziellen Bedrängnis</strong> zu handeln. Das Darlehen und der 10% Wochenzinssatz entsprechen meinem eigenen ausdrücklichen Wunsch (Findom/Kink). Ich verzichte hiermit ausdrücklich und unwiderruflich auf die Geltendmachung der Einrede des Wuchers oder der Sittenwidrigkeit (§ 138 BGB).
+                          </p>
+                        </div>
+                      `,
+                      'JA, DIES IST MEIN WUNSCH & ICH VERZICHTE AUF WUCHEREINREDE ➔',
+                      () => {
+                        // Step 5/5: § 688 ZPO Gerichtliches Mahnverfahren & Titulierung
+                        setTimeout(() => {
+                          showModal(
+                            '📜 RECHTSKLAUSEL 5 VON 5 (§ 688 ZPO)',
+                            `
+                              <div style="padding:12px;background:#2a0000;border:1.5px solid var(--red);border-radius:4px;color:#fff">
+                                <h4 style="color:var(--red);margin-bottom:8px">§ 688 ZPO MAHNVERFAHREN & INKASSO (30 JAHRE TITEL)</h4>
+                                <p style="font-size:0.85rem;line-height:1.4">
+                                  Bei Zahlungsverzug willige ich in die sofortige Einleitung des gerichtlich-amtlichen Mahnverfahrens (Erwirkung eines <strong>30 Jahre gültigen Vollstreckungstitels gem. § 197 BGB</strong>) sowie die sofortige kostenpflichtige Übergabe an ein Inkasso-Syndikat ein.
+                                </p>
+                              </div>
+                            `,
+                            '⚖️ ALLE 5 KLAUSELN BESTÄTIGEN & VERTRAG FINAL ABSCHLIESSEN',
+                            async () => {
+                              // FINALIZATION & CONTRACT SAVING
+                              await finalizeContractCreation(data);
+                            },
+                            'ABBRECHEN'
+                          );
+                        }, 100);
+                      },
+                      'ABBRECHEN'
+                    );
+                  }, 100);
+                },
+                'ABBRECHEN'
+              );
+            }, 100);
+          },
+          'ABBRECHEN'
+        );
+      }, 100);
+    },
+    'ABBRECHEN'
+  );
+}
+
+async function finalizeContractCreation(data) {
+  try {
+    const curSubId = currentUser.id || currentUser.uid || 'sub';
+    const contractData = {
+      subId: curSubId,
+      username: currentUser.username || 'sub',
+      displayName: data.name,
+      birthinfo: data.birthinfo,
+      idnum: data.idnum,
+      employer: data.employer,
+      address: data.address,
+      iban: data.iban,
+      principal: data.amt,
+      weeklyInterestRate: 0.10,
+      weeklyInterestAmount: data.weeklyInterest,
+      rhythm: data.rhythm,
+      installmentRate: data.rate,
+      addons: data.addons,
+      addonsSum: data.addonsSum,
+      schuldAnerkannt: true,
+      abtretungAgreed: true,
+      inkassoAgreed: true,
+      wucherVerzichtAgreed: true,
+      mahnverfahrenAgreed: true,
+      clause1Agreed: true,
+      clause2Agreed: true,
+      clause3Agreed: true,
+      clause4Agreed: true,
+      clause5Agreed: true,
+      signatureDataUrl: data.signatureDataUrl,
+      hasSignature: true,
+      auditTrail: {
+        userAgent: data.userAgentStr,
+        timestamp: data.nowISO
+      },
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+      status: 'active'
+    };
+
+    let refId = 'lnc_' + Date.now();
+    try {
+      if (db) {
+        const ref = await db.collection('loanContracts').add(contractData);
+        refId = ref.id;
+      }
+    } catch (e) {
+      console.error('Firestore loanContracts write error:', e);
+    }
+
+    const fullContract = { id: refId, ...contractData };
+    if (!loanContracts.some(l => l.id === refId)) {
+      loanContracts.push(fullContract);
+    }
+
+    if (curSubId && db) {
+      db.collection('subs').doc(curSubId).set({
+        loanContractsArr: firebase.firestore.FieldValue.arrayUnion(fullContract)
+      }, { merge: true }).catch(() => {});
+    }
+
+    showToast('Darlehensvertrag & 5 Rechtsklauseln erfolgreich unterzeichnet! 📜', 'success');
+    if (currentUser.role === 'dom') renderDomLoansOverview();
+    else renderSubLoansView();
+
+    setTimeout(() => {
+      try {
+        generateLoanContractPDF(fullContract);
+      } catch (pdfErr) {
+        console.warn('PDF generation notice:', pdfErr);
+      }
+    }, 100);
+  } catch (err) {
+    console.error('Error finalizing loan contract:', err);
+    showAlert('FEHLER', 'Fehler beim Speichern des Darlehensvertrags: ' + (err.message || err));
+  }
 }
 
 function generateLoanContractPDF(c) {
