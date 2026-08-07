@@ -1442,6 +1442,15 @@ function formatWeekRange(weekStart) {
   return `Freitag, den ${wsStr} bis Donnerstag, den ${weStr}`;
 }
 
+function getFagTaxWeekStartMs(ft) {
+  if (!ft || !ft.weekStart) return 0;
+  if (typeof ft.weekStart.seconds === 'number') return ft.weekStart.seconds * 1000;
+  if (ft.weekStart instanceof Date) return ft.weekStart.getTime();
+  if (typeof ft.weekStart === 'number') return ft.weekStart;
+  const d = new Date(ft.weekStart);
+  return isNaN(d.getTime()) ? 0 : d.getTime();
+}
+
 function getSubFagConfig(sub) {
   return sub && sub.fagTax ? { ...FAG_CONFIG_DEFAULTS, ...sub.fagTax } : { ...FAG_CONFIG_DEFAULTS };
 }
@@ -1906,19 +1915,71 @@ async function settleAllFagTaxPositions(ft, payDate = new Date(), intAmt = 0, to
     } catch (e) { console.warn('sub doc wheelSpinsArr update notice:', e); }
   }
 
-  // 4. Update active Loan Contracts for this sub
-  const activeLoans = (loanContracts || []).filter(l =>
-    (l.subId === subId || (subUsername && l.username === subUsername)) &&
-    l.status !== 'completed' && l.status !== 'inkasso_sold'
-  );
-  for (const lc of activeLoans) {
-    const weeklyInt = lc.weeklyInterestAmount || ((lc.principal || 0) * 0.10);
-    const rate = lc.installmentRate || 0;
-    const duePmt = weeklyInt + rate;
+  // 4. Update active Loan Contracts for this sub & record loan payment entries
+  let loanItemsToProcess = [];
+  if (Array.isArray(ft.openPositions)) {
+    loanItemsToProcess = ft.openPositions.filter(p => p.type === 'loan');
+  }
+
+  if (loanItemsToProcess.length === 0) {
+    const activeLoans = (loanContracts || []).filter(l =>
+      (l.subId === subId || (subUsername && l.username === subUsername)) &&
+      l.status !== 'completed' && l.status !== 'inkasso_sold'
+    );
+    activeLoans.forEach(l => {
+      const weeklyInt = l.weeklyInterestAmount || ((l.principal || 0) * 0.10);
+      const rate = l.installmentRate || 0;
+      loanItemsToProcess.push({
+        id: l.id,
+        amount: round2(weeklyInt + rate),
+        weeklyInterest: weeklyInt,
+        installmentRate: rate
+      });
+    });
+  }
+
+  const invoiceKWStr = kw || getKW(ft.weekStart?.seconds ? new Date(ft.weekStart.seconds * 1000) : new Date(ft.weekStart || Date.now()));
+
+  for (const item of loanItemsToProcess) {
+    const lc = (loanContracts || []).find(l => l.id === item.id || (subId && l.subId === subId));
+    if (!lc) continue;
+
+    const duePmt = round2(parseFloat(item.amount) || ((lc.weeklyInterestAmount || ((lc.principal || 0) * 0.10)) + (lc.installmentRate || 0)));
+    if (duePmt <= 0) continue;
+
+    // Check if payment doc already exists for this loan & FactoX invoice
+    const alreadyRecorded = payments.some(p =>
+      (p.fagTaxId && p.fagTaxId === ft.id && (p.loanId === lc.id || p.category === 'darlehen')) ||
+      (p.loanId === lc.id && p.description && p.description.includes(`FactoX KW ${invoiceKWStr}`))
+    );
+
+    if (!alreadyRecorded) {
+      const loanPmtDoc = {
+        amount: duePmt,
+        category: 'darlehen',
+        description: `Darlehens-Ratenzahlung via FactoX KW ${invoiceKWStr} (#${lc.id.slice(0, 6).toUpperCase()})`,
+        paidBy: subUsername,
+        subId: subId,
+        loanId: lc.id,
+        fagTaxId: ft.id || null,
+        createdAt: payDate,
+        createdBy: currentUser ? currentUser.role : 'dom',
+        confirmed: true,
+        status: 'confirmed'
+      };
+
+      if (db) {
+        try {
+          const ref = await db.collection('payments').add(loanPmtDoc);
+          loanPmtDoc.id = ref.id;
+        } catch (e) { console.warn('Payment record error for loan during settlement:', e); }
+      }
+      if (!loanPmtDoc.id) loanPmtDoc.id = 'ft_loan_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+      payments.push(loanPmtDoc);
+    }
 
     const existingLoanPayments = getLoanPayments(lc);
-    const prevPaid = existingLoanPayments.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
-    const newPaidTotal = prevPaid + duePmt;
+    const newPaidTotal = existingLoanPayments.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
     const startTotal = (lc.principal || 0) + (lc.addonsSum || 0);
     const isCompleted = newPaidTotal >= startTotal;
 
@@ -2669,6 +2730,7 @@ function startPaymentListener() {
     if (currentUser.role !== 'dom') {
       payments.sort((a, b) => toMs(b.createdAt) - toMs(a.createdAt));
     }
+    syncLoanPaymentsFromPaidInvoices();
     renderPayments();
     updateTotals();
     if (currentUser.role === 'dom') {
@@ -2726,9 +2788,110 @@ function getLoanPayments(lc) {
     const isLoanCat = p.category === 'darlehen' || (p.description || '').toLowerCase().includes('darlehen');
     if (!isLoanCat) return false;
 
-    // Only assign payment if the loanId explicitly matches, to prevent older payments from being merged
-    return p.loanId === fullLoanId;
+    // Assign payment if the loanId explicitly matches full or prefix ID, or if description references contract ID
+    return p.loanId === fullLoanId ||
+      (p.loanId && fullLoanId.startsWith(p.loanId)) ||
+      (p.loanId && p.loanId.startsWith(fullLoanId)) ||
+      (p.description && p.description.includes(fullLoanId.slice(0, 6).toUpperCase()));
   });
+}
+
+async function syncLoanPaymentsFromPaidInvoices() {
+  if (!fagTaxes || !loanContracts || !db) return;
+  const paidFTs = fagTaxes.filter(f => f.paid);
+  let changed = false;
+
+  for (const ft of paidFTs) {
+    const subId = ft.subId;
+    const sub = (subs || []).find(s => s.id === subId);
+    const subUsername = sub ? sub.username : (ft.username || '');
+    const payDate = ft.paidAt
+      ? (ft.paidAt.seconds ? new Date(ft.paidAt.seconds * 1000) : new Date(ft.paidAt))
+      : (ft.createdAt ? (ft.createdAt.seconds ? new Date(ft.createdAt.seconds * 1000) : new Date(ft.createdAt)) : new Date());
+    const kw = getKW(ft.weekStart?.seconds ? new Date(ft.weekStart.seconds * 1000) : new Date(ft.weekStart || Date.now()));
+
+    let loanItems = [];
+    if (Array.isArray(ft.openPositions)) {
+      loanItems = ft.openPositions.filter(p => p.type === 'loan');
+    }
+    if (loanItems.length === 0 && (ft.loanCost > 0 || ft.baseAmount > 0)) {
+      const subLoans = loanContracts.filter(l => l.subId === subId || (subUsername && l.username === subUsername));
+      subLoans.forEach(l => {
+        const weeklyInt = round2(l.weeklyInterestAmount || ((l.principal || 0) * 0.10));
+        const rate = round2(l.installmentRate || 0);
+        loanItems.push({
+          id: l.id,
+          amount: round2(weeklyInt + rate),
+          weeklyInterest: weeklyInt,
+          installmentRate: rate
+        });
+      });
+    }
+
+    for (const item of loanItems) {
+      const loanId = item.id;
+      const lc = loanContracts.find(l => l.id === loanId || (subId && l.subId === subId));
+      if (!lc) continue;
+
+      const pmtAmount = parseFloat(item.amount) || round2((lc.weeklyInterestAmount || ((lc.principal || 0) * 0.10)) + (lc.installmentRate || 0));
+      if (pmtAmount <= 0) continue;
+
+      const exists = payments.some(p =>
+        (p.fagTaxId && p.fagTaxId === ft.id && (p.loanId === lc.id || p.category === 'darlehen')) ||
+        (p.loanId === lc.id && p.description && p.description.includes(`FactoX KW ${kw}`))
+      );
+
+      if (!exists) {
+        changed = true;
+        const pmtDoc = {
+          amount: round2(pmtAmount),
+          category: 'darlehen',
+          description: `Darlehens-Ratenzahlung via FactoX KW ${kw} (#${lc.id.slice(0, 6).toUpperCase()})`,
+          paidBy: subUsername,
+          subId: subId,
+          loanId: lc.id,
+          fagTaxId: ft.id,
+          createdAt: payDate,
+          createdBy: 'dom',
+          confirmed: true,
+          status: 'confirmed'
+        };
+
+        try {
+          const ref = await db.collection('payments').add(pmtDoc);
+          pmtDoc.id = ref.id;
+        } catch (e) {
+          console.warn('Sync loan payment error:', e);
+          pmtDoc.id = 'sync_loan_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+        }
+        payments.push(pmtDoc);
+
+        const loanPmts = getLoanPayments(lc);
+        const newPaidTotal = loanPmts.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
+        const startTotal = (lc.principal || 0) + (lc.addonsSum || 0);
+        const isCompleted = newPaidTotal >= startTotal;
+
+        try {
+          await db.collection('loanContracts').doc(lc.id).update({
+            totalPaid: newPaidTotal,
+            status: isCompleted ? 'completed' : 'active',
+            lastPaidAt: payDate
+          });
+        } catch (e) {}
+        lc.totalPaid = newPaidTotal;
+        if (isCompleted) lc.status = 'completed';
+      }
+    }
+  }
+
+  if (changed) {
+    renderPayments();
+    updateTotals();
+    if (currentUser) {
+      if (currentUser.role === 'dom') renderDomLoansOverview();
+      else renderSubLoansView();
+    }
+  }
 }
 
 async function deletePayment(id) {
@@ -3877,78 +4040,107 @@ function renderSubFagTaxCounters() {
 
 function renderSubFagTaxHistory() {
   if (currentUser.role !== 'sub') return;
-  const paid = fagTaxes.filter(f => f.paid);
   const existing = $('sub-fagtax-history');
   if (existing) existing.remove();
 
-  // Only show unpaid Fag-Taxes from PREVIOUS weeks (where late interest applies)
-  // Current week's FagTax is hidden — only visible after KONTO PRÜFEN
-  const weekStart = getCurrentWeekStart();
-  const overdueUnpaid = fagTaxes.filter(f =>
-    !f.paid &&
-    f.subId === currentUser.uid &&
-    f.weekStart &&
-    f.weekStart.seconds &&
-    f.weekStart.seconds * 1000 < weekStart.getTime()
-  );
+  const curSubId = currentUser.uid || currentUser.id;
+  const weekStartMs = getCurrentWeekStart().getTime();
+
+  // ONLY completed past weeks (weekStart strictly prior to current week start)
+  const pastCompletedFts = (fagTaxes || []).filter(ft => {
+    const isSub = ft.subId === curSubId || ft.subId === currentUser.id || (currentUser.username && ft.username === currentUser.username);
+    if (!isSub) return false;
+    const wsMs = getFagTaxWeekStartMs(ft);
+    return wsMs > 0 && wsMs < weekStartMs;
+  });
+
+  // Sort by weekStart descending (newest completed week first)
+  pastCompletedFts.sort((a, b) => getFagTaxWeekStartMs(b) - getFagTaxWeekStartMs(a));
 
   let html = `<div class="sub-fagtax-section" id="sub-fagtax-history" style="margin-top:20px">
     <h3>📜 FAG-TAX VERLAUF</h3>`;
 
-  // Show overdue unpaid FagTaxes from previous weeks
-  if (overdueUnpaid.length > 0) {
-    overdueUnpaid.forEach(ft => {
-      const baseAmt = ft.baseAmount || ft.totalAmount || 0;
-      const carriedArr = ft.carriedInterest || [];
-      const carriedSum = carriedArr.reduce((s, c) => s + (c.amount || 0), 0);
-      const total = baseAmt + carriedSum;
-      const ftTotal = total.toFixed(2).replace('.', ',') + '€';
-      const kw2 = ft.weekStart ? getKW(new Date(ft.weekStart.seconds * 1000)) : '';
-      const daysLate = calculateLateInterestDays(new Date(ft.weekStart.seconds * 1000));
-      const carriedSub = carriedArr.length > 0
-        ? carriedArr.map(c => `Zinsen KW ${c.sourceKW}: ${(c.amount || 0).toFixed(2).replace('.',',')}€`).join(' • ')
-        : '';
-      html += `<div class="ft-history-item" style="border-color:var(--red);background:var(--bg-hover-red)">
-        <span style="flex:1;font-weight:900;color:var(--red)">⚠️ ÜBERFÄLLIG KW ${kw2}</span>
-        <span style="flex:2;font-size:0.75rem;color:var(--text-secondary)">${daysLate} Tag(e) überfällig${carriedSub ? ' • ' + carriedSub : ''}</span>
-        <span class="ft-history-paid" style="font-weight:900;color:var(--red);font-size:0.85rem">${ftTotal}</span>
-      </div>`;
-    });
-  }
-
-  if (paid.length === 0) {
-    html += `<p style="color:var(--text-secondary);font-weight:700;text-align:center;padding:10px;font-size:0.8rem">Noch keine Fag-Taxes bezahlt.</p>`;
+  if (pastCompletedFts.length === 0) {
+    html += `<p style="color:var(--text-secondary);font-weight:700;text-align:center;padding:12px;font-size:0.8rem">Noch keine abgeschlossenen Factro-Wochen vorhanden.</p>`;
   } else {
-    paid.slice(0, 20).forEach(f => {
-      const total = (f.totalWithInterest || f.totalAmount || 0).toFixed(2).replace('.', ',') + '€';
-      let dateStr = '';
-      if (f.paidAt && f.paidAt.seconds) dateStr = new Date(f.paidAt.seconds * 1000).toLocaleDateString('de-DE');
+    pastCompletedFts.forEach(ft => {
+      const wsMs = getFagTaxWeekStartMs(ft);
+      const wsDate = new Date(wsMs);
+      const dateStr = wsDate.toLocaleDateString('de-DE');
+      const kw = getKW(wsDate);
+      const kwLabel = `${dateStr} KW ${kw}`;
+
       const breakdown = [];
-      if (f.loginCost > 0) breakdown.push(`${f.loginsCount || 0} Logins = ${(f.loginCost || 0).toFixed(2).replace('.', ',')}€`);
-      if (f.minuteCost > 0) breakdown.push(`${f.minutesCount || 0} Min = ${(f.minuteCost || 0).toFixed(2).replace('.', ',')}€`);
-      if (f.taxAmount > 0) breakdown.push(`Steuer (${(f.taxAmount || 0).toFixed(2).replace('.', ',')}€)`);
-      const carriedArr = f.carriedInterest || [];
+      if (ft.loginCost > 0 || ft.loginsCount > 0) breakdown.push(`${ft.loginsCount || 0} Logins = ${(ft.loginCost || 0).toFixed(2).replace('.', ',')}€`);
+      if (ft.minuteCost > 0 || ft.minutesCount > 0 || ft.secondsCount > 0) {
+        const mins = ft.minutesCount || Math.ceil((ft.secondsCount || 0) / 60);
+        breakdown.push(`${mins} Min = ${(ft.minuteCost || 0).toFixed(2).replace('.', ',')}€`);
+      }
+      if (ft.taxAmount > 0) breakdown.push(`Steuer (${(ft.taxAmount || 0).toFixed(2).replace('.', ',')}€)`);
+      const carriedArr = ft.carriedInterest || [];
       if (carriedArr.length > 0) {
         carriedArr.forEach(c => breakdown.push(`Zinsen KW ${c.sourceKW}: ${(c.amount || 0).toFixed(2).replace('.',',')}€`));
       }
-      if (f.interestAmount > 0) {
-        breakdown.push(`+${f.interestAmount.toFixed(2).replace('.', ',')}€ Verzug`);
+      if (ft.interestAmount > 0) {
+        breakdown.push(`+${ft.interestAmount.toFixed(2).replace('.', ',')}€ Verzug`);
       }
-      const kw = f.weekStart ? getKW(f.weekStart.seconds ? new Date(f.weekStart.seconds * 1000) : f.weekStart) : '';
-      const kwLabel = kw ? `KW ${kw}` : '';
-      html += `<div class="ft-history-item">
-        <span style="flex:1">${dateStr} ${kwLabel}</span>
-        <span style="flex:2;font-size:0.7rem;color:var(--text-secondary)">${breakdown.join(' • ')}</span>
-        <span class="ft-history-paid" style="font-weight:900">${total} ✅</span>
+
+      const totalAmt = ft.paid
+        ? (ft.totalWithInterest || ft.totalAmount || 0)
+        : (ft.totalAmount || ft.baseAmount || 0);
+      const totalStr = totalAmt.toFixed(2).replace('.', ',') + '€';
+
+      const paidBadge = ft.paid
+        ? `<span style="font-weight:900;color:var(--green)">${totalStr} ✅</span>`
+        : `<span style="font-weight:900;color:var(--red)">${totalStr} 🔥 OFFEN</span>`;
+
+      html += `<div class="ft-history-item" style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;background:var(--bg-surface);border:1px solid var(--border);margin-bottom:6px;gap:10px;flex-wrap:wrap">
+        <div style="flex:1;min-width:140px">
+          <span style="font-weight:800;font-size:0.85rem">${kwLabel}</span>
+          <div style="font-size:0.7rem;color:var(--text-secondary);margin-top:2px">${breakdown.join(' • ')}</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span class="ft-history-paid">${paidBadge}</span>
+          <button class="btn btn--sm btn--cyan btn-download-history-pdf" data-ftid="${ft.id}" style="padding:4px 10px;font-size:0.7rem;font-weight:800;letter-spacing:0.5px">📄 PDF HERUNTERLADEN</button>
+        </div>
       </div>`;
     });
   }
 
   html += '</div>';
 
-  const section = qs('#payments-card');
-  if (section) section.insertAdjacentHTML('afterend', html);
+  const fagtaxUI = $('sub-fagtax-ui');
+  if (fagtaxUI) {
+    fagtaxUI.insertAdjacentHTML('afterend', html);
+  } else {
+    const section = qs('#payments-card');
+    if (section) section.insertAdjacentHTML('beforebegin', html);
+  }
+
+  // Attach PDF download handlers
+  qsa('.btn-download-history-pdf').forEach(btn => {
+    btn.onclick = () => {
+      const ft = fagTaxes.find(f => f.id === btn.dataset.ftid);
+      if (!ft) return;
+      const sub = subs.find(s => s.id === ft.subId) || currentUser;
+      generateFagTaxInvoice(
+        sub,
+        ft.loginsCount || 0,
+        ft.secondsCount || 0,
+        ft.loginCost || 0,
+        ft.minuteCost || 0,
+        ft.taxAmount || 0,
+        ft.checkCost || 0,
+        ft.interestAmount || 0,
+        ft.totalAmount || 0,
+        ft,
+        ft.carriedInterest || [],
+        ft.baseAmount
+      );
+    };
+  });
 }
+
 
 // =============================================
 // MODAL SYSTEM
@@ -4205,6 +4397,7 @@ function startLoansListener() {
   unsubscribeLoans = db.collection('loanContracts').onSnapshot(snap => {
     loanContracts = [];
     snap.forEach(doc => loanContracts.push({ id: doc.id, ...doc.data() }));
+    syncLoanPaymentsFromPaidInvoices();
     if (currentUser) {
       if (currentUser.role === 'dom') renderDomLoansOverview();
       else renderSubLoansView();
