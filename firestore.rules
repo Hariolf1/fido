@@ -1,49 +1,8 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /subs/{subId} {
-      allow read: if true;
-      allow create, update: if request.resource.data.username != null;
-      allow delete: if true;
-    }
-    match /payments/{paymentId} {
-      allow read: if true;
-      allow create, update: if request.resource.data.amount != null && request.resource.data.amount is number;
-      allow delete: if true;
-    }
-    match /fagTaxes/{taxId} {
-      allow read: if true;
-      allow create, update: if request.resource.data.subId != null;
-      allow delete: if true;
-    }
-    match /sessions/{sessionId} {
-      allow read: if true;
-      allow create, update: if request.resource.data.subId != null;
-      allow delete: if true;
-    }
-    match /accountChecks/{checkId} {
-      allow read: if true;
-      allow create, update: if request.resource.data.subId != null;
-      allow delete: if true;
-    }
-    match /loanContracts/{contractId} {
-      allow read, write: if true;
-    }
-    match /wheelSpins/{spinId} {
-      allow read, write: if true;
-    }
-    match /tributeTasks/{taskId} {
-      allow read, write: if true;
-    }
-    match /shopItems/{itemId} {
-      allow read, write: if true;
-    }
-    match /shopBids/{bidId} {
-      allow read, write: if true;
-    }
     match /{document=**} {
-      allow read, write: if false;
+      allow read, write: if true;
     }
   }
 }
-
