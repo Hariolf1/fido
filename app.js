@@ -1119,16 +1119,20 @@ async function updateSubUsername(id, username) {
 }
 async function deleteSub(id) {
   try {
-    const cols = ['sessions', 'payments', 'fagTaxes', 'accountChecks'];
+    const cols = ['sessions', 'payments', 'fagTaxes', 'accountChecks', 'wheelSpins', 'loanContracts', 'shopBids'];
     for (const col of cols) {
       const snap = await db.collection(col).where('subId', '==', id).get();
       const del = snap.docs.map(d => d.ref.delete());
       await Promise.all(del);
     }
     await db.collection('subs').doc(id).delete();
-    showToast('Sau + alle Daten gelöscht', 'error');
+    showToast('Sau + alle Daten gelöscht', 'success');
     return true;
-  } catch (_) { return false; }
+  } catch (err) { 
+    console.error("Fehler beim Löschen der Sau:", err);
+    showToast('Fehler beim Löschen: ' + err.message, 'error');
+    return false; 
+  }
 }
 async function updateSubFagTax(id, updates) {
   try {
@@ -2679,7 +2683,11 @@ function renderSubs() {
   qsa('.btn-delete-sub').forEach(b => {
     b.onclick = async () => {
       const ok = await showConfirm('SAU ENTFERNEN', 'Diese Sau + alle Zahlungen/Sessions wirklich ENDGÜLTIG löschen?');
-      if (ok) deleteSub(b.dataset.id);
+      if (ok) {
+        await deleteSub(b.dataset.id);
+        editingSubId = null;
+        renderSubs();
+      }
     };
   });
 
