@@ -4641,17 +4641,17 @@ function generateInkassoDrohbriefPDF(subName, amount, title) {
 // --- SÜNDER-GLÜCKSRAD (WHEEL OF FORTUNE) ---
 const WHEEL_SEGMENTS = [
   { label: '5€ DEMUT-OBOLUS', amount: 5, color: '#27ae60' },
-  { label: '10€ KAFFEE-TRIBUT', amount: 10, color: '#2980b9' },
+  { label: '6€ TRIBUT-STRAFE', amount: 6, color: '#16a085' },
   { label: '🔥 2x ZINSEN (3 W.)', amount: 0, special: 'double_interest_3w', color: '#8e44ad' },
-  { label: '15€ LOSER-ZUSCHLAG', amount: 15, color: '#16a085' },
-  { label: '20€ SCHUH-PUTZ', amount: 20, color: '#e67e22' },
+  { label: '7€ KAFFEE-ZUSCHLAG', amount: 7, color: '#2980b9' },
+  { label: '8€ SCHUH-PUTZ', amount: 8, color: '#e67e22' },
   { label: '⚡ 2x FAG-TAX FR', amount: 0, special: 'double_tax_friday', color: '#cc0000' },
-  { label: '25€ TRIBUT', amount: 25, color: '#9b59b6' },
-  { label: '30€ EROTIK-TAX', amount: 30, color: '#d35400' },
-  { label: '35€ ZINS-STRAFE', amount: 35, color: '#2c3e50' },
-  { label: '40€ SCHWEINE-TAX', amount: 40, color: '#c0392b' },
-  { label: '45€ DEMÜTIGUNG', amount: 45, color: '#6D214F' },
-  { label: '50€ MAX-STRAFE', amount: 50, color: '#b71540' }
+  { label: '9€ DEMÜTIGUNG', amount: 9, color: '#9b59b6' },
+  { label: '10€ EROTIK-TAX', amount: 10, color: '#d35400' },
+  { label: '5€ SCHWEINE-OBOLUS', amount: 5, color: '#2c3e50' },
+  { label: '8€ KNECHT-STRAFE', amount: 8, color: '#c0392b' },
+  { label: '10€ ZINS-STRAFE', amount: 10, color: '#6D214F' },
+  { label: '20€ MAX-STRAFE', amount: 20, color: '#b71540' }
 ];
 
 let isSpinning = false;
@@ -4710,20 +4710,20 @@ async function spinWheel() {
   isSpinning = true;
   const curSubId = currentUser.id || currentUser.uid || 'sub';
 
-  // 1. Charge 5.00€ spin fee automatically as a wheel spin debt
+  // 1. Charge 2.50€ spin fee automatically as a wheel spin debt
   try {
     const feeObj = {
       subId: curSubId,
       username: currentUser.username || 'sub',
       prizeTitle: 'Glücksrad-Einsatzgebühr',
-      prizeAmount: 5.00,
+      prizeAmount: 2.50,
       dueDate: Date.now() + 24 * 3600 * 1000,
       paid: false,
       mahnStufe: 0,
       createdAt: new Date()
     };
     await db.collection('wheelSpins').add(feeObj);
-    showToast('5,00€ Glücksrad-Gebühr berechnet 💸', 'info');
+    showToast('2,50€ Glücksrad-Gebühr berechnet 💸', 'info');
   } catch (e) { console.error('Spin fee charge failed:', e); }
 
   const spinBtn = document.getElementById('btn-spin-wheel');
