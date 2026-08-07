@@ -1183,8 +1183,12 @@ tbody tr:hover {
 .overlay.active { display: flex; }
 
 .overlay-panel {
-  max-width: 520px;
+  max-width: 600px;
   width: 100%;
+  max-height: 90vh;
+  max-height: 90dvh;
+  display: flex;
+  flex-direction: column;
   animation: overlayIn var(--transition-base);
 }
 
@@ -1231,6 +1235,13 @@ tbody tr:hover {
 .modal {
   background: var(--bg-card);
   border: 1px solid var(--border-light);
+  display: flex;
+  flex-direction: column;
+  max-height: 90vh;
+  max-height: 90dvh;
+  width: 100%;
+  overflow: hidden;
+  border-radius: 6px;
 }
 
 .modal-header {
@@ -1239,6 +1250,7 @@ tbody tr:hover {
   justify-content: space-between;
   padding: 16px 20px;
   border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
 }
 
 .modal-title {
@@ -1275,6 +1287,9 @@ tbody tr:hover {
   font-size: 0.85rem;
   line-height: 1.7;
   color: var(--text-secondary);
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .modal-footer {
@@ -1283,6 +1298,7 @@ tbody tr:hover {
   justify-content: flex-end;
   padding: 16px 20px;
   border-top: 1px solid var(--border);
+  flex-shrink: 0;
 }
 
 /* =============================================

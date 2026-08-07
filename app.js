@@ -5376,6 +5376,8 @@ function renderDomLoansOverview() {
     const remaining = Math.max(0, startTotal - totalPaid);
 
     const isInkassoSold = lc.status === 'inkasso_sold';
+    const isDomSigned = !!lc.domSigned;
+
     return `
       <div style="padding:12px;background:var(--bg-surface);border:1px solid ${isInkassoSold ? 'var(--red)' : 'var(--border)'};margin-bottom:10px;border-radius:4px">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">
@@ -5384,8 +5386,12 @@ function renderDomLoansOverview() {
             <div style="font-size:0.75rem;color:var(--text-secondary);margin-top:2px">Nennbetrag: ${lc.principal}€ • Zinsen: ${lc.weeklyInterestAmount}€/Woche • Rate: ${lc.installmentRate}€</div>
             <div style="font-size:0.75rem;color:var(--purple);margin-top:2px;font-weight:700">Bereits getilgt: ${totalPaid.toFixed(2)}€ • Restbestand: <strong style="color:var(--red)">${remaining.toFixed(2)}€</strong></div>
             <div style="font-size:0.7rem;color:var(--text-dim);margin-top:2px">IBAN: ${escapeHtml(lc.iban || '—')} • Abtretung (§ 398 BGB): ✓ Gültig</div>
+            <div style="margin-top:4px">
+              ${isDomSigned ? `<span style="background:rgba(142,68,173,0.2);border:1px solid var(--purple);color:var(--purple);padding:2px 8px;border-radius:3px;font-size:0.7rem;font-weight:800">✍️ VOM HERRN GEGENGEZEICHNET</span>` : `<span style="background:rgba(255,152,0,0.15);border:1px solid var(--orange);color:var(--orange);padding:2px 8px;border-radius:3px;font-size:0.7rem;font-weight:700">⏳ WARTE AUF HERRN-GEGENZEICHNUNG</span>`}
+            </div>
           </div>
           <div class="card-actions-responsive">
+            ${!isDomSigned ? `<button class="btn btn--sm btn--purple btn-dom-sign-loan" data-lcid="${lc.id}">✍️ ALS HERR GEGENZEICHNEN</button>` : ''}
             <button class="btn btn--sm btn--primary btn-dom-loan-pay" data-subid="${lc.subId || ''}" data-lcid="${lc.id}" data-rate="${lc.installmentRate}">💳 RATENEINGANG BUCHEN</button>
             <button class="btn btn--sm btn--cyan btn-download-loan-pdf" data-lcid="${lc.id}">📄 VERTRAG-PDF</button>
             ${isInkassoSold ? `<button class="btn btn--sm btn--orange btn-download-inkasso-pdf" data-lcid="${lc.id}">⚡ INKASSO-BESCHEID PDF</button>` : `<button class="btn btn--sm btn--danger btn-sell-inkasso" data-lcid="${lc.id}" data-subid="${lc.subId || ''}" data-amt="${remaining}">⚖️ FORDERUNG AN INKASSO VERKAUFEN</button>`}
@@ -5395,6 +5401,10 @@ function renderDomLoansOverview() {
       </div>
     `;
   }).join('');
+
+  qsa('.btn-dom-sign-loan').forEach(btn => {
+    btn.onclick = () => openDomLoanSignatureModal(btn.dataset.lcid);
+  });
 
   qsa('.btn-dom-loan-pay').forEach(btn => {
     btn.onclick = () => {
@@ -5423,6 +5433,182 @@ function renderDomLoansOverview() {
   qsa('.btn-delete-loan-contract').forEach(btn => {
     btn.onclick = () => deleteLoanContract(btn.dataset.lcid);
   });
+}
+
+function openDomLoanSignatureModal(loanId) {
+  const lc = loanContracts.find(l => l.id === loanId);
+  if (!lc) {
+    showAlert('FEHLER', 'Darlehensvertrag konnte nicht gefunden werden.');
+    return;
+  }
+
+  const subName = lc.displayName || lc.username;
+  const principal = lc.principal || 0;
+  const grandTotal = principal + (lc.addonsSum || 0);
+
+  const bodyHTML = `
+    <div style="display:flex;flex-direction:column;gap:12px;max-height:68vh;overflow-y:auto;padding-right:6px">
+      <div style="background:rgba(142,68,173,0.15);border-left:4px solid var(--purple);padding:10px 12px;font-size:0.75rem;color:var(--text-secondary);border-radius:4px">
+        <strong style="color:var(--purple);font-size:0.8rem">✍️ GEGENZEICHNUNG ALS HERR & GLÄUBIGER (§ 488 BGB):</strong><br>
+        Du gegenzeichnest den Darlehensvertrag von <strong>${escapeHtml(subName)}</strong> als Gläubiger. Nach der Unterzeichnung wird dein Gläubiger-Siegel & deine Unterschrift im offiziellen Vertrags-PDF eingedruckt.
+      </div>
+
+      <div style="background:var(--bg-card);padding:10px;border:1px solid var(--border);border-radius:4px;font-size:0.75rem">
+        <div>• Schuldner: <strong>${escapeHtml(subName)}</strong></div>
+        <div>• Nennbetrag / Gesamtschuld: <strong>${principal.toFixed(2)}€ / ${grandTotal.toFixed(2)}€</strong></div>
+        <div>• Wochenzinsen: <strong>${(lc.weeklyInterestAmount || (principal * 0.10)).toFixed(2)}€/Woche</strong></div>
+        <div>• Unterzeichnet von Sau am: <strong>${lc.createdAt?.seconds ? new Date(lc.createdAt.seconds * 1000).toLocaleDateString('de-DE') : 'Vorherschende Version'}</strong></div>
+      </div>
+
+      <div style="background:var(--bg-card);padding:10px;border:1px solid var(--border);border-radius:4px;text-align:center">
+        <label style="font-size:0.75rem;color:var(--purple);font-weight:800;display:block;margin-bottom:4px">UNTERSCHRIFT DES HERRN (GLÄUBIGER) *</label>
+        <p style="font-size:0.68rem;color:var(--text-dim);margin-bottom:6px">Zeichne hier deine Handschrift als HERR oder nutze das automatische Gläubiger-Siegel:</p>
+        <div style="position:relative;display:inline-block;width:100%;max-width:380px">
+          <canvas id="dom-sig-canvas" width="380" height="110" style="border:1.5px dashed var(--purple);background:#0a0512;width:100%;height:110px;touch-action:none;cursor:crosshair;border-radius:4px"></canvas>
+          <button type="button" id="btn-clear-dom-sig" class="btn btn--sm btn--ghost" style="position:absolute;top:4px;right:4px;font-size:0.6rem;padding:2px 6px;background:rgba(0,0,0,0.6)">🗑 LÖSCHEN</button>
+        </div>
+        <div style="margin-top:6px">
+          <button type="button" id="btn-auto-dom-seal" class="btn btn--sm btn--ghost" style="color:var(--purple);border-color:var(--purple);font-weight:700">👑 AUTOMATISCHES HERRN-SIEGEL STEMPELN</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  let domSigned = false;
+
+  showModal('✍️ DARLEHEN ALS HERR GEGENZEICHNEN', bodyHTML, '👑 JETZT RECHTSKRÄFTIG GEGENZEICHNEN', async () => {
+    const canvas = document.getElementById('dom-sig-canvas');
+    if (!canvas) return false;
+
+    if (!domSigned) {
+      drawMasterSealOnCanvas(canvas);
+      domSigned = true;
+    }
+
+    const domSigDataUrl = canvas.toDataURL('image/png');
+
+    try {
+      if (db) {
+        await db.collection('loanContracts').doc(loanId).update({
+          domSigned: true,
+          domSignatureDataUrl: domSigDataUrl,
+          domSignedAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+      }
+    } catch (e) {
+      console.error('Dom signature update error:', e);
+    }
+
+    lc.domSigned = true;
+    lc.domSignatureDataUrl = domSigDataUrl;
+    lc.domSignedAt = Date.now();
+
+    const curSubId = lc.subId;
+    if (curSubId && db) {
+      db.collection('subs').doc(curSubId).set({
+        loanContractsArr: loanContracts.filter(l => l.subId === curSubId)
+      }, { merge: true }).catch(() => {});
+    }
+
+    showToast('Darlehensvertrag als HERR/Gläubiger gegengezeichnet! 👑', 'success');
+    renderDomLoansOverview();
+
+    setTimeout(() => {
+      generateLoanContractPDF(lc);
+    }, 100);
+
+    return true;
+  }, 'ABBRECHEN');
+
+  const canvas = document.getElementById('dom-sig-canvas');
+  if (canvas) {
+    const ctx = canvas.getContext('2d');
+    ctx.lineWidth = 3;
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = '#a855f7';
+
+    let isDrawing = false;
+    let lastX = 0, lastY = 0;
+
+    function getPos(e) {
+      const rect = canvas.getBoundingClientRect();
+      const clientX = e.touches && e.touches.length ? e.touches[0].clientX : e.clientX;
+      const clientY = e.touches && e.touches.length ? e.touches[0].clientY : e.clientY;
+      return {
+        x: (clientX - rect.left) * (canvas.width / rect.width),
+        y: (clientY - rect.top) * (canvas.height / rect.height)
+      };
+    }
+
+    function startDraw(e) {
+      isDrawing = true;
+      domSigned = true;
+      const pos = getPos(e);
+      lastX = pos.x; lastY = pos.y;
+    }
+
+    function draw(e) {
+      if (!isDrawing) return;
+      e.preventDefault();
+      const pos = getPos(e);
+      ctx.beginPath();
+      ctx.moveTo(lastX, lastY);
+      ctx.lineTo(pos.x, pos.y);
+      ctx.stroke();
+      lastX = pos.x; lastY = pos.y;
+    }
+
+    function stopDraw() { isDrawing = false; }
+
+    canvas.addEventListener('mousedown', startDraw);
+    canvas.addEventListener('mousemove', draw);
+    canvas.addEventListener('mouseup', stopDraw);
+    canvas.addEventListener('mouseleave', stopDraw);
+
+    canvas.addEventListener('touchstart', startDraw, { passive: false });
+    canvas.addEventListener('touchmove', draw, { passive: false });
+    canvas.addEventListener('touchend', stopDraw);
+
+    const clearBtn = document.getElementById('btn-clear-dom-sig');
+    if (clearBtn) {
+      clearBtn.onclick = () => {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        domSigned = false;
+      };
+    }
+
+    const sealBtn = document.getElementById('btn-auto-dom-seal');
+    if (sealBtn) {
+      sealBtn.onclick = () => {
+        drawMasterSealOnCanvas(canvas);
+        domSigned = true;
+      };
+    }
+  }
+}
+
+function drawMasterSealOnCanvas(canvas) {
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  
+  ctx.save();
+  ctx.strokeStyle = '#a855f7';
+  ctx.lineWidth = 2.5;
+  
+  ctx.strokeRect(10, 10, canvas.width - 20, canvas.height - 20);
+  ctx.strokeRect(14, 14, canvas.width - 28, canvas.height - 28);
+
+  ctx.fillStyle = '#a855f7';
+  ctx.font = '900 16px "Space Grotesk", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('👑 HERR & GLÄUBIGER', canvas.width / 2, 45);
+
+  ctx.font = 'bold 11px "JetBrains Mono", monospace';
+  ctx.fillText('RECHTSKRÄFTIG GEGENGEZEICHNET', canvas.width / 2, 65);
+  ctx.font = '9px monospace';
+  ctx.fillStyle = '#d8b4fe';
+  ctx.fillText(`AKTENZEICHEN GEGENZEICHNUNG • ${new Date().toLocaleDateString('de-DE')}`, canvas.width / 2, 82);
+  ctx.restore();
 }
 
 async function sellLoanToInkasso(loanId, remainingAmt) {

@@ -4590,7 +4590,7 @@ function openLoanContractModal() {
   const nowISO = new Date().toISOString();
 
   const bodyHTML = `
-    <form id="loan-wizard-form" style="display:flex;flex-direction:column;gap:12px">
+    <form id="loan-wizard-form" style="display:flex;flex-direction:column;gap:12px;max-height:68vh;overflow-y:auto;padding-right:6px;box-sizing:border-box">
       <div style="background:rgba(255,23,68,0.12);border-left:4px solid var(--red);padding:10px 12px;font-size:0.75rem;color:var(--text-secondary);border-radius:4px">
         <strong style="color:var(--red);font-size:0.8rem">⚠️ SCHRITT 1: STAMMDATEN & SIGNATUR EINGEBEN (§ 488 / § 781 BGB):</strong><br>
         Fülle hier deine Stammdaten aus und zeichne deine digitale Handschrift. Im Anschluss erfolgt die schrittweise rechtliche Unterwerfung unter die 5 gesetzlichen Vertragsklauseln.
@@ -4606,7 +4606,7 @@ function openLoanContractModal() {
           <button type="button" class="btn btn--sm btn-loan-preset" data-val="500">500€</button>
           <button type="button" class="btn btn--sm btn-loan-preset" data-val="1000">1000€</button>
         </div>
-        <input type="number" id="loan-amount-input" value="100" min="10" max="5000" step="10" style="width:100%;padding:8px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text)">
+        <input type="number" id="loan-amount-input" value="100" min="10" max="5000" step="10" style="width:100%;padding:8px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);box-sizing:border-box">
       </div>
 
       <!-- 2. ZINSEN -->
@@ -4618,8 +4618,8 @@ function openLoanContractModal() {
       <!-- 3. RATEN -->
       <div>
         <label style="font-size:0.7rem;color:var(--text-dim);font-weight:700">3. RATENHÖHE & RHYTHMUS</label>
-        <div style="display:flex;gap:8px">
-          <select id="loan-rhythm" style="flex:1;padding:8px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text)">
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <select id="loan-rhythm" style="flex:1;min-width:140px;padding:8px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text)">
             <option value="weekly">Wöchentlich (jeden Freitag)</option>
             <option value="monthly_1">Monatlich (zum 1.)</option>
             <option value="monthly_15">Monatlich (zum 15.)</option>
@@ -4643,36 +4643,36 @@ function openLoanContractModal() {
       <div style="background:var(--bg-card);padding:10px;border:1px solid var(--border);border-radius:4px">
         <label style="font-size:0.75rem;color:var(--red);font-weight:800;display:block;margin-bottom:6px">5. SCHULDNER-PERSONALIEN & TITULIERUNGSDATEN *</label>
         
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(130px, 1fr));gap:6px">
           <div>
             <label style="font-size:0.65rem;color:var(--text-dim)">Vollständiger Name *</label>
-            <input type="text" id="loan-fullname" value="${escapeHtml(subName)}" placeholder="Vor- und Nachname" required style="width:100%;padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);font-size:0.8rem">
+            <input type="text" id="loan-fullname" value="${escapeHtml(subName)}" placeholder="Vor- und Nachname" required style="width:100%;padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);font-size:0.8rem;box-sizing:border-box">
           </div>
           <div>
             <label style="font-size:0.65rem;color:var(--text-dim)">Geburtsdatum & Geburtsort *</label>
-            <input type="text" id="loan-birthinfo" placeholder="TT.MM.JJJJ in Stadt" required style="width:100%;padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);font-size:0.8rem">
+            <input type="text" id="loan-birthinfo" placeholder="TT.MM.JJJJ in Stadt" required style="width:100%;padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);font-size:0.8rem;box-sizing:border-box">
           </div>
         </div>
 
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(130px, 1fr));gap:6px;margin-top:6px">
           <div>
             <label style="font-size:0.65rem;color:var(--text-dim)">Personalausweis- / Pass-ID *</label>
-            <input type="text" id="loan-idnum" placeholder="z.B. T22000123" required style="width:100%;padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);font-size:0.8rem">
+            <input type="text" id="loan-idnum" placeholder="z.B. T22000123" required style="width:100%;padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);font-size:0.8rem;box-sizing:border-box">
           </div>
           <div>
             <label style="font-size:0.65rem;color:var(--text-dim)">Arbeitgeber / Einkommensquelle *</label>
-            <input type="text" id="loan-employer" placeholder="Firma / Arbeitgeber (für Abtretung)" required style="width:100%;padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);font-size:0.8rem">
+            <input type="text" id="loan-employer" placeholder="Firma / Arbeitgeber (für Abtretung)" required style="width:100%;padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);font-size:0.8rem;box-sizing:border-box">
           </div>
         </div>
 
         <div style="margin-top:6px">
           <label style="font-size:0.65rem;color:var(--text-dim)">Vollständige Meldeadresse (Straße, Hausnr, PLZ, Ort) *</label>
-          <input type="text" id="loan-address" placeholder="Hauptstraße 1, 10115 Berlin" required style="width:100%;padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);font-size:0.8rem">
+          <input type="text" id="loan-address" placeholder="Hauptstraße 1, 10115 Berlin" required style="width:100%;padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);font-size:0.8rem;box-sizing:border-box">
         </div>
 
         <div style="margin-top:6px">
           <label style="font-size:0.65rem;color:var(--text-dim)">IBAN (Bankverbindung für Pfändung & Abtretung) *</label>
-          <input type="text" id="loan-iban" placeholder="DE00 0000 0000 0000 0000 00" required style="width:100%;padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);font-size:0.8rem">
+          <input type="text" id="loan-iban" placeholder="DE00 0000 0000 0000 0000 00" required style="width:100%;padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);font-size:0.8rem;box-sizing:border-box">
         </div>
       </div>
 
@@ -5087,9 +5087,10 @@ function generateLoanContractPDF(c) {
 
   <div class="signature-box">
     <div class="sig">
-      ${SVG_PDF_ICONS.crown}<br>
-      <strong>HERR (Darlehensgeber)</strong><br>
-      <span style="font-size:7pt;color:#666">[Ausgestellt & Beglaubigt]</span>
+      ${(c.domSigned && c.domSignatureDataUrl) ?
+        `<img src="${c.domSignatureDataUrl}" class="sig-img" alt="Signatur des HERRN"><br><strong>HERR (Darlehensgeber)</strong><br><span style="font-size:7pt;color:#880000;font-weight:bold">[Vom HERRN als Gläubiger gegengezeichnet]</span>` :
+        `${SVG_PDF_ICONS.crown}<br><strong>HERR (Darlehensgeber)</strong><br><span style="font-size:7pt;color:#666">[Ausgestellt durch Gläubiger]</span>`
+      }
     </div>
     <div class="sig">
       ${c.signatureDataUrl ? `<img src="${c.signatureDataUrl}" class="sig-img" alt="Handschriftliche Signatur">` : `${SVG_PDF_ICONS.user}<br>`}
