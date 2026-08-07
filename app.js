@@ -157,10 +157,20 @@ let activeSessionSeconds = 0;     // Only counts visible seconds
 let activeTimeInterval = null;    // 1s tick for active time counting
 
 // =============================================
+// =============================================
 // UTILITIES
 // =============================================
 function round2(n) {
   return Math.round(n * 100) / 100;
+}
+
+function toMs(val) {
+  if (!val) return 0;
+  if (typeof val === 'number') return val;
+  if (val instanceof Date) return val.getTime();
+  if (typeof val.toDate === 'function') return val.toDate().getTime();
+  if (typeof val.seconds === 'number') return val.seconds * 1000;
+  return 0;
 }
 
 // =============================================
@@ -187,9 +197,8 @@ function calculateWeeklyFagTax(sub, weekStart, sessionsArr, paymentsArr, checksA
   const logins = cfg.loginsEnabled !== false
     ? sessionsArr.filter(s =>
         s.subId === sub.id &&
-        s.loginTime && s.loginTime.seconds &&
-        s.loginTime.seconds * 1000 >= wStart.getTime() &&
-        s.loginTime.seconds * 1000 < upperBoundMs
+        toMs(s.loginTime) >= wStart.getTime() &&
+        toMs(s.loginTime) < upperBoundMs
       ).length
     : 0;
 
@@ -197,9 +206,8 @@ function calculateWeeklyFagTax(sub, weekStart, sessionsArr, paymentsArr, checksA
   const closedSeconds = cfg.minutesEnabled !== false
     ? sessionsArr.filter(s =>
         s.subId === sub.id &&
-        s.loginTime && s.loginTime.seconds &&
-        s.loginTime.seconds * 1000 >= wStart.getTime() &&
-        s.loginTime.seconds * 1000 < upperBoundMs
+        toMs(s.loginTime) >= wStart.getTime() &&
+        toMs(s.loginTime) < upperBoundMs
       ).reduce((sum, s) => sum + (s.durationSeconds || s.durationMinutes * 60 || 0), 0)
     : 0;
 
@@ -210,40 +218,77 @@ function calculateWeeklyFagTax(sub, weekStart, sessionsArr, paymentsArr, checksA
   // Costs
   const perLogin = cfg.perLogin || 1;
   const perSec = (cfg.perMinute || 1) / 60;
-  const taxRate = cfg.taxRate || 0.03;
+  let taxRate = cfg.taxRate || 0.03;
   let taxStart = cfg.taxStartDate || FAG_CONFIG_DEFAULTS.taxStartDate;
   
   // Safe conversion for taxStart (handles Firestore Timestamp)
   if (taxStart && typeof taxStart.toDate === 'function') taxStart = taxStart.toDate();
   const taxStartFinal = taxStart instanceof Date ? taxStart : new Date(taxStart);
   const startMs = isNaN(taxStartFinal.getTime()) ? new Date('2026-07-01').getTime() : taxStartFinal.getTime();
+
+  // Check active special penalties for this sub
+  const activePenalties = (sub && sub.activePenalties) || {};
+  let fridayMultiplier = 1;
+  let penaltyMultiplierNotice = [];
+
+  // 1. Double Friday Tax effect (check if active for current week or active until date)
+  if (activePenalties.double_tax_friday && activePenalties.double_tax_friday.until) {
+    const untilMs = toMs(activePenalties.double_tax_friday.until);
+    if (Date.now() <= untilMs || wStart.getTime() <= untilMs) {
+      fridayMultiplier = 2;
+      penaltyMultiplierNotice.push('⚡ 2x FREITAGS-DOPPEL-TAX');
+    }
+  }
+
+  // 2. Double Interest for 3 Weeks (doubles taxRate to 6%)
+  if (activePenalties.double_interest_3w && activePenalties.double_interest_3w.until) {
+    const untilMs = toMs(activePenalties.double_interest_3w.until);
+    if (Date.now() <= untilMs || wStart.getTime() <= untilMs) {
+      taxRate = taxRate * 2;
+      penaltyMultiplierNotice.push('🔥 2x VERDOPPELTE FAG-TAX ZINSEN (3 WOCHEN)');
+    }
+  }
+
   const loginCost = round2(logins * perLogin);
   const timeCost = round2(totalSeconds * perSec);
 
-  // Year total (uses configurable start date)
+  // Year total (uses configurable start date - only counts confirmed payments)
   const yearTotal = paymentsArr.filter(p => {
-    const match = p.subId === sub.id;
+    const match = p.subId === sub.id || p.subId === sub.uid || p.paidBy === sub.username;
+    const isConfirmed = p.confirmed !== false && p.status !== 'pending_confirmation';
     // Handle pending serverTimestamp (null createdAt)
-    const ts = p.createdAt ? (p.createdAt.seconds ? p.createdAt.seconds * 1000 : (p.createdAt instanceof Date ? p.createdAt.getTime() : Date.now())) : Date.now();
-    return match && ts >= startMs;
+    const ts = p.createdAt ? toMs(p.createdAt) : Date.now();
+    return match && isConfirmed && ts >= startMs;
   }).reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
 
-  const taxAmount = cfg.taxEnabled !== false ? round2(yearTotal * taxRate) : 0;
+  const taxAmount = cfg.taxEnabled !== false ? round2(yearTotal * taxRate * fridayMultiplier) : 0;
 
-  // Account check costs within week bounds
+  // Account check costs within week bounds (supports JS Date, Timestamp, or pending serverTimestamp)
   const checkCost = round2(checksArr
-    .filter(c => c.subId === sub.id && c.createdAt && c.createdAt.seconds &&
-            c.createdAt.seconds * 1000 >= wStart.getTime() &&
-            c.createdAt.seconds * 1000 < upperBoundMs)
+    .filter(c => c.subId === sub.id && c.createdAt &&
+            (toMs(c.createdAt) || Date.now()) >= wStart.getTime() &&
+            (toMs(c.createdAt) || Date.now()) < upperBoundMs)
     .reduce((s, c) => s + (c.amount || 0), 0));
 
-  const baseAmount = round2(loginCost + timeCost + taxAmount + checkCost);
+  // Active Loan costs (weekly 10% interest + due installment rate)
+  const subLoans = (loanContracts || []).filter(l =>
+    (l.subId === sub.id || (sub.username && l.username === sub.username)) &&
+    l.status !== 'completed'
+  );
+  const loanCost = round2(subLoans.reduce((sum, l) => {
+    const weeklyInt = l.weeklyInterestAmount || ((l.principal || 0) * 0.10);
+    const rate = l.installmentRate || 0;
+    return sum + weeklyInt + rate;
+  }, 0));
+
+  const baseAmount = round2(loginCost + timeCost + taxAmount + checkCost + loanCost);
 
   return {
     logins, closedSeconds, liveSeconds, totalSeconds,
-    loginCost, timeCost, taxAmount, checkCost,
+    loginCost, timeCost, taxAmount, checkCost, loanCost,
     yearTotal, baseAmount,
-    perLogin, perSec, taxRate
+    perLogin, perSec, taxRate, fridayMultiplier,
+    penaltyNotice: penaltyMultiplierNotice.join(' | ')
   };
 }
 
@@ -268,6 +313,7 @@ const paymentsTbody = $('payments-tbody'), emptyState = $('empty-state');
 const actionTh = $('action-th'), thSub = $('th-sub');
 const paymentForm = $('payment-form'), inputAmount = $('input-amount');
 const inputCategory = $('input-category'), inputSub = $('input-sub');
+const inputLoan = $('input-loan'), loanSelectRow = $('loan-select-row');
 const inputDescription = $('input-description'), inputDate = $('input-date'), formFeedback = $('form-feedback');
 const userBadge = $('user-badge'), subForm = $('sub-form');
 const subUsername = $('sub-username'), subPassword = $('sub-password');
@@ -355,9 +401,12 @@ async function loginSub(username, password) {
       .where('password', '==', password)
       .where('active', '==', true).get();
     if (snap.empty) return false;
-    const d = snap.docs[0], data = d.data();
+    const d = snap.docs[0];
+    const data = d.data();
     currentUser = {
-      uid: d.id, username: data.username, password: data.password,
+      id: d.id,
+      uid: d.id,
+      username: data.username, password: data.password,
       displayName: data.displayName || data.username,
       role: 'sub', label: 'ZAHL SCHWEIN', icon: '🐷'
     };
@@ -365,7 +414,10 @@ async function loginSub(username, password) {
     await closeStaleSessions();
     await startSession();
     return true;
-  } catch (e) { return false; }
+  } catch (e) {
+    console.error('Sub login error:', e);
+    return false;
+  }
 }
 
 async function logout() {
@@ -395,6 +447,10 @@ async function logout() {
   if (unsubscribeSessions) { unsubscribeSessions(); unsubscribeSessions = null; }
   if (unsubscribeFagTaxes) { unsubscribeFagTaxes(); unsubscribeFagTaxes = null; }
   if (unsubscribeAccountChecks) { unsubscribeAccountChecks(); unsubscribeAccountChecks = null; }
+  if (unsubscribeLoans) { unsubscribeLoans(); unsubscribeLoans = null; }
+  if (unsubscribeWheel) { unsubscribeWheel(); unsubscribeWheel = null; }
+  if (unsubscribeShopItems) { unsubscribeShopItems(); unsubscribeShopItems = null; }
+  if (unsubscribeShopBids) { unsubscribeShopBids(); unsubscribeShopBids = null; }
 
   // 6. Reset state
   currentUser = null; 
@@ -672,12 +728,14 @@ async function closeStaleSessions() {
         // Fallback for missing loginTime to prevent huge durations
         if (!loginMs || isNaN(loginMs)) loginMs = hbMs || cutoff; 
         
-        const mins = Math.round((cutoff - loginMs) / 60000);
-        const secs = Math.round((cutoff - loginMs) / 1000);
+        // Cap duration to 30s past the last recorded heartbeat to prevent wall-clock inflation
+        const effectiveEndMs = hbMs ? Math.min(cutoff, hbMs + 30000) : cutoff;
+        const secs = Math.max(1, Math.round((effectiveEndMs - loginMs) / 1000));
+        const mins = Math.max(1, Math.round(secs / 60));
         db.collection('sessions').doc(doc.id).update({
-          logoutTime: new Date(cutoff),
-          durationMinutes: Math.max(1, mins),
-          durationSeconds: Math.max(1, secs),
+          logoutTime: new Date(effectiveEndMs),
+          durationMinutes: mins,
+          durationSeconds: secs,
           active: false
         });
       }
@@ -769,8 +827,10 @@ function startSubSessionsListener() {
           sessions.push(data);
         }
       });
-      // Keep lastCheckSessions in sync so counters stay accurate
-      lastCheckSessions = sessions;
+      // Keep lastCheckSessions in sync only if already unlocked via checkAccount
+      if (lastCheckSessions !== null) {
+        lastCheckSessions = sessions;
+      }
     }, err => console.warn('Sub sessions listener error:', err.message));
 }
 
@@ -856,6 +916,10 @@ function showDashboardView() {
 
   // Start real-time listeners
   startPaymentListener();
+  startLoansListener();
+  startWheelListener();
+  startShopListener();
+
   if (currentUser.role === 'dom') {
     startSubsListener();
     startFagTaxesListener();
@@ -905,8 +969,9 @@ window.addEventListener('beforeinstallprompt', (e) => {
 });
 
 function showPwaHintIfNeeded() {
+  const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
   const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-  const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
+  const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone || document.referrer.includes('android-app://');
   const forceShow = window.location.search.includes('pwa=1');
   const hint = $('pwa-hint');
   if (!hint) return;
@@ -914,28 +979,29 @@ function showPwaHintIfNeeded() {
   if ((isMobile || forceShow) && !isStandalone) {
     setTimeout(() => {
       hint.classList.remove('hidden');
-    }, 2000);
+    }, 1500);
     
     // Platform-specific logic
     const installBtn = $('pwa-install-btn');
     const icon = qs('.pwa-share-icon', hint);
-    const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
-    const isAndroid = /Android/.test(navigator.userAgent);
-    const isChrome = /Chrome/.test(navigator.userAgent) && !/Edge|OPR/.test(navigator.userAgent);
+    const pwaText = qs('.pwa-text p', hint);
+    const isSafari = isIOS && /Safari/i.test(navigator.userAgent) && !/CriOS|FxiOS|OPiOS|EdgiOS/i.test(navigator.userAgent);
 
     if (isIOS) {
-      // iOS: Hide button, show share icon instructions
       if (installBtn) installBtn.style.display = 'none';
       if (icon) {
         icon.style.display = 'inline-block';
-        icon.innerHTML = '⎋'; // Simple share-like icon
+        icon.innerHTML = '⎋';
+      }
+      if (!isSafari && pwaText) {
+        pwaText.innerHTML = 'Auf dem iPhone funktioniert die Installation <strong>nur in Safari</strong>.<br>Bitte öffne diesen Link in Safari, tippe unten auf <span class="pwa-share-icon">⎋</span> (Teilen) und wähle <strong>"Zum Home-Bildschirm"</strong>.';
+      } else if (pwaText) {
+        pwaText.innerHTML = 'Tippe in Safari unten in der Leiste auf das Teilen-Symbol <span class="pwa-share-icon">⎋</span> und wähle <strong>"Zum Home-Bildschirm"</strong>.';
       }
     } else if (deferredPrompt) {
-      // Android/Chrome with native support: Show button
       if (installBtn) installBtn.style.display = 'inline-block';
       if (icon) icon.style.display = 'none';
-    } else if (forceShow || isAndroid || isChrome) {
-      // Desktop or Android without prompt yet: Show button but explain fallback
+    } else if (forceShow || !isIOS) {
       if (installBtn) installBtn.style.display = 'inline-block';
     }
   }
@@ -1039,7 +1105,17 @@ async function updateSubUsername(id, username) {
   const clean = username.toLowerCase().trim();
   if (!clean || clean.length < 2) return false;
   if (subs.some(s => s.id !== id && s.active !== false && s.username === clean)) return false;
-  try { await db.collection('subs').doc(id).update({ username: clean }); return true; } catch (_) { return false; }
+  try {
+    await db.collection('subs').doc(id).update({ username: clean });
+    // Batch update related payments & fagTaxes documents
+    const batch = db.batch();
+    const paymentsSnap = await db.collection('payments').where('subId', '==', id).get();
+    paymentsSnap.forEach(d => batch.update(d.ref, { paidBy: clean, subUsername: clean }));
+    const fagSnap = await db.collection('fagTaxes').where('subId', '==', id).get();
+    fagSnap.forEach(d => batch.update(d.ref, { username: clean }));
+    await batch.commit();
+    return true;
+  } catch (_) { return false; }
 }
 async function deleteSub(id) {
   try {
@@ -1085,6 +1161,7 @@ function startFagTaxesListener() {
       renderFagTaxOverview();
     } else {
       renderSubFagTaxView();
+      renderSubFagTaxInvoices();
     }
   }, err => console.warn('FagTax listener error:', err.message));
 }
@@ -1352,7 +1429,11 @@ async function autoCreateFagTaxes() {
       const prevKW = getKW(new Date(prevFT.weekStart.seconds * 1000));
       carriedInterest.push({ sourceKW: String(prevKW), amount: prevFT.interestAmount });
     }
-    const carriedSum = carriedInterest.reduce((s, c) => s + c.amount, 0);
+
+    const effectiveCarriedInterest = (existingFT && Array.isArray(existingFT.carriedInterest) && existingFT.carriedInterest.length > 0)
+      ? existingFT.carriedInterest
+      : (carriedInterest.length > 0 ? carriedInterest : []);
+    const carriedSum = effectiveCarriedInterest.reduce((s, c) => s + (c.amount || 0), 0);
     const totalAmount = round2(calc.baseAmount + carriedSum);
 
     if (existingFT) {
@@ -1369,7 +1450,7 @@ async function autoCreateFagTaxes() {
           taxAmount: calc.taxAmount,
           checkCost: calc.checkCost,
           baseAmount: calc.baseAmount,
-          carriedInterest: carriedInterest.length > 0 ? carriedInterest : [],
+          carriedInterest: effectiveCarriedInterest,
           totalAmount
         });
       } catch (e) { console.error('FagTax update error:', e); }
@@ -1681,12 +1762,24 @@ const FAGTAX_INSULTS = [
   'Zahl oder kriech zurück in dein Loch. Du weißt, was richtig ist.'
 ];
 
+const SVG_PDF_ICONS = {
+  money: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#cc0000" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block;vertical-align:-4px;margin-right:6px"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>`,
+  crown: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#cc0000" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block;vertical-align:-2px;margin-right:4px"><path d="M2 4l3 12h14l3-12-6 7-4-7-4 7-3-7z"/><path d="M3 20h18"/></svg>`,
+  user: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#444" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block;vertical-align:-2px;margin-right:4px"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`,
+  card: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#111" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block;vertical-align:-2px;margin-right:4px"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>`,
+  alert: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#cc0000" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block;vertical-align:-2px;margin-right:4px"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`,
+  bolt: `<svg width="13" height="13" viewBox="0 0 24 24" fill="#cc0000" stroke="none" style="display:inline-block;vertical-align:-2px;margin-right:2px"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>`,
+  fire: `<svg width="13" height="13" viewBox="0 0 24 24" fill="#d35400" stroke="none" style="display:inline-block;vertical-align:-2px;margin-right:2px"><path d="M12 2c0 0-5 3.5-5 8 0 2.5 1.5 4.5 3.5 5.5-1.5-2.5-1-5.5 0-7 2.5 3.5 6.5 4 6.5 8.5 0 3.5-2.5 6-5 6s-5.5-2.5-5.5-6.5C6.5 10.5 12 2 12 2z"/></svg>`,
+  document: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#cc0000" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block;vertical-align:-3px;margin-right:6px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>`
+};
+
 function generateFagTaxInvoice(sub, logins, seconds, loginCost, minuteCost, taxAmount, checkCost, interestAmount, totalAmount, existingFT, carriedArr = [], baseAmount = 0) {
   if (!baseAmount) baseAmount = totalAmount;
   const cfg = getSubFagConfig(sub);
   const perSec = (cfg.perMinute || 1) / 60;
   const insult = FAGTAX_INSULTS[Math.floor(Math.random() * FAGTAX_INSULTS.length)];
   const now = new Date();
+  const dateStr = now.toLocaleDateString('de-DE');
   const ftWeekStart = existingFT && existingFT.weekStart
     ? (existingFT.weekStart.seconds ? new Date(existingFT.weekStart.seconds * 1000) : new Date(existingFT.weekStart))
     : getCurrentWeekStart();
@@ -1698,167 +1791,387 @@ function generateFagTaxInvoice(sub, logins, seconds, loginCost, minuteCost, taxA
   const totalStr = grandTotal.toFixed(2).replace('.', ',');
   const yearTotal = calcYearTotalPayments(sub.id, payments);
 
+  const checksCount = (accountChecks || []).filter(c => c.subId === sub.id && c.createdAt && c.createdAt.seconds && c.createdAt.seconds * 1000 >= ftWeekStart.getTime()).length;
+
+  const doubleTax = sub && sub.activePenalties && sub.activePenalties.double_tax_friday;
+  const doubleInt = sub && sub.activePenalties && sub.activePenalties.double_interest_3w;
+  let penaltyBadge = '';
+  if (doubleTax) penaltyBadge += `<span style="color:#cc0000;font-weight:700;margin-left:4px">${SVG_PDF_ICONS.bolt} (2x FREITAGS-DOPPEL)</span>`;
+  if (doubleInt) penaltyBadge += `<span style="color:#d35400;font-weight:700;margin-left:4px">${SVG_PDF_ICONS.fire} (6% DOPPELZINS)</span>`;
+
   const html = `<!DOCTYPE html>
 <html lang="de"><head><meta charset="UTF-8"><title>FAG-TAX RECHNUNG ${ftId}</title>
 <style>
-  @page { margin: 12mm 15mm; size: A4; }
+  @page { margin: 8mm 10mm; size: A4 portrait; }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body {
-    height: 100%;
-    background: #fff;
-    color: #000;
-    font-family: 'Courier New', Courier, monospace;
+    width: 100%;
+    background: #ffffff;
+    color: #111111;
+    font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
     font-size: 8.5pt;
     line-height: 1.35;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
   body {
+    padding: 0;
+    margin: 0 auto;
+  }
+  .page-container {
+    padding: 4mm 6mm;
     display: flex;
     flex-direction: column;
-    min-height: 267mm;
-    padding: 0;
+    justify-content: space-between;
+    box-sizing: border-box;
   }
-  .page-content { flex: 1; display: flex; flex-direction: column; }
-  .header { text-align: center; border-bottom: 2px solid #cc0000; padding-bottom: 8px; margin-bottom: 10px; }
-  .header h1 { font-size: 18pt; color: #cc0000; letter-spacing: 6px; font-weight: 900; line-height: 1.1; }
-  .header .sub { font-size: 7pt; color: #666; letter-spacing: 3px; margin-top: 2px; }
-  .header .number { font-size: 7pt; color: #999; margin-top: 4px; }
-  .meta { display: flex; justify-content: space-between; margin-bottom: 8px; gap: 10px; }
-  .meta-box { border: 1.5px solid #cc0000; padding: 6px 10px; width: 48%; }
-  .meta-box h3 { font-size: 6.5pt; color: #cc0000; letter-spacing: 2px; text-transform: uppercase; margin-bottom: 4px; }
-  .meta-box p { font-size: 8pt; color: #000; }
-  .meta-box .small { font-size: 6.5pt; color: #999; }
-  .divider { text-align: center; color: #cc0000; font-size: 12pt; letter-spacing: 6px; margin: 6px 0; }
-  table { width: 100%; border-collapse: collapse; margin: 6px 0; }
-  thead th { background: #000; color: #fff; padding: 5px 6px; font-size: 6.5pt; letter-spacing: 2px; text-transform: uppercase; text-align: left; }
-  tbody td { padding: 5px 6px; border-bottom: 1px solid #ccc; font-size: 8pt; }
-  tbody tr:last-child td { border-bottom: none; }
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    border-bottom: 2px solid #cc0000;
+    padding-bottom: 8px;
+    margin-bottom: 10px;
+  }
+  .header-left h1 {
+    font-size: 16pt;
+    color: #cc0000;
+    letter-spacing: 4px;
+    font-weight: 800;
+    line-height: 1.1;
+    display: flex;
+    align-items: center;
+  }
+  .header-left .sub {
+    font-size: 7.5pt;
+    color: #555555;
+    letter-spacing: 2px;
+    margin-top: 3px;
+    font-weight: 600;
+  }
+  .header-right {
+    text-align: right;
+  }
+  .badge-id {
+    display: inline-block;
+    background: #cc0000;
+    color: #ffffff;
+    font-size: 8pt;
+    font-weight: 700;
+    padding: 3px 8px;
+    border-radius: 3px;
+    letter-spacing: 1px;
+  }
+  .header-right .date-info {
+    font-size: 7pt;
+    color: #666666;
+    margin-top: 4px;
+  }
+
+  .meta-grid {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 10px;
+  }
+  .meta-card {
+    flex: 1;
+    border: 1px solid #e0e0e0;
+    border-top: 3px solid #cc0000;
+    background: #fcfcfc;
+    border-radius: 4px;
+    padding: 8px 10px;
+  }
+  .meta-card h3 {
+    font-size: 7pt;
+    color: #cc0000;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    margin-bottom: 4px;
+    display: flex;
+    align-items: center;
+    font-weight: 700;
+  }
+  .meta-card p {
+    font-size: 8.5pt;
+    color: #111111;
+    font-weight: 700;
+  }
+  .meta-card .small {
+    font-size: 7pt;
+    color: #666666;
+    font-weight: 400;
+    margin-top: 2px;
+  }
+
+  .period-bar {
+    background: #fff5f5;
+    border-left: 3px solid #cc0000;
+    padding: 6px 10px;
+    font-size: 8pt;
+    color: #333333;
+    letter-spacing: 1px;
+    font-weight: 600;
+    margin-bottom: 10px;
+    border-radius: 0 4px 4px 0;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 10px;
+  }
+  thead th {
+    background: #111111;
+    color: #ffffff;
+    padding: 6px 8px;
+    font-size: 7pt;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    text-align: left;
+    font-weight: 700;
+  }
+  tbody tr {
+    border-bottom: 1px solid #eee;
+  }
+  tbody tr:nth-child(even) {
+    background: #f9f9f9;
+  }
+  tbody td {
+    padding: 5px 8px;
+    font-size: 8pt;
+    color: #222;
+  }
+  .mono {
+    font-family: 'JetBrains Mono', 'Courier New', monospace;
+  }
   .ta-right { text-align: right; }
   .ta-center { text-align: center; }
-  .total-row td { font-weight: 900; font-size: 10pt; padding: 7px 6px; border-top: 2px solid #cc0000; }
-  .total-row .amount { color: #cc0000; font-size: 13pt; }
-  .insult-box { margin: 8px 0; padding: 8px; background: #fef2f2; border: 1.5px solid #cc0000; border-radius: 3px; }
-  .insult-box p { font-size: 7.5pt; font-style: italic; color: #cc0000; text-align: center; }
-  .payment-info { margin: 8px 0; padding: 7px 10px; background: #f5f5f5; border: 1px solid #ccc; }
-  .payment-info h4 { font-size: 6.5pt; letter-spacing: 2px; text-transform: uppercase; margin-bottom: 4px; }
-  .payment-info p { font-size: 7pt; color: #333; }
-  .signature { margin-top: auto; padding-top: 8px; text-align: right; }
-  .signature p { font-size: 8pt; }
-  .signature .name { font-weight: 900; color: #cc0000; font-size: 11pt; }
-  .footer { padding-top: 6px; border-top: 1px solid #ccc; font-size: 6pt; color: #999; text-align: center; letter-spacing: 1.5px; }
-  @media print { body { padding: 0; } .no-print { display: none; } }
+
+  .total-container {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 10px;
+  }
+  .total-card {
+    width: 250px;
+    background: #fff0f0;
+    border: 1.5px solid #cc0000;
+    border-radius: 4px;
+    padding: 8px 12px;
+    text-align: right;
+  }
+  .total-card .label {
+    font-size: 7pt;
+    letter-spacing: 2px;
+    color: #880000;
+    font-weight: 800;
+    text-transform: uppercase;
+  }
+  .total-card .amount {
+    font-size: 16pt;
+    font-weight: 900;
+    color: #cc0000;
+    line-height: 1.2;
+    margin: 2px 0;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .total-card .words {
+    font-size: 6.5pt;
+    color: #666666;
+    font-weight: 500;
+  }
+
+  .insult-box {
+    margin-bottom: 10px;
+    padding: 6px 10px;
+    background: #fff8f8;
+    border-left: 3px solid #cc0000;
+    border-radius: 0 4px 4px 0;
+  }
+  .insult-box p {
+    font-size: 7.5pt;
+    font-style: italic;
+    color: #990000;
+    text-align: center;
+  }
+
+  .payment-info {
+    margin-bottom: 10px;
+    padding: 8px 12px;
+    background: #f8f9fa;
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+  }
+  .payment-info h4 {
+    font-size: 7pt;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    margin-bottom: 4px;
+    color: #111;
+    display: flex;
+    align-items: center;
+    font-weight: 700;
+  }
+  .payment-info p {
+    font-size: 7.5pt;
+    color: #333333;
+    line-height: 1.4;
+  }
+  .payment-info code {
+    font-family: 'JetBrains Mono', monospace;
+    background: #eef1f5;
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-size: 7.5pt;
+    color: #cc0000;
+    font-weight: 700;
+  }
+  .deadline {
+    margin-top: 4px;
+    color: #cc0000;
+    font-weight: 800;
+    font-size: 7.5pt;
+    display: flex;
+    align-items: center;
+  }
+
+  .signature {
+    margin-top: 8px;
+    padding-top: 4px;
+    text-align: right;
+  }
+  .signature p { font-size: 7.5pt; color: #444; }
+  .signature .name { font-weight: 900; color: #cc0000; font-size: 10.5pt; margin-top: 2px; }
+
+  .footer {
+    margin-top: 8px;
+    padding-top: 6px;
+    border-top: 1px dashed #cccccc;
+    font-size: 6pt;
+    color: #888888;
+    text-align: center;
+    letter-spacing: 1px;
+  }
+
+  @media print {
+    body { padding: 0; }
+    .no-print { display: none !important; }
+  }
 </style></head>
 <body>
-  <div class="page-content">
-  <div class="header">
-    <h1>💰 FAG·TAX</h1>
-    <p class="sub">R E C H N U N G &mdash; ZAHLUNGSSOLL</p>
-    <p class="number">Rechnung Nr. <strong>FT-${ftId}</strong></p>
-  </div>
-
-  <div class="meta">
-    <div class="meta-box">
-      <h3>👑 Gläubiger (Herr)</h3>
-      <p><strong>HERR</strong></p>
-      <p class="small">Dein Herr und Gebieter • Eigentümer deines Geldes</p>
+  <div class="page-container">
+    <div class="header">
+      <div class="header-left">
+        <h1>${SVG_PDF_ICONS.money} FAG·TAX</h1>
+        <div class="sub">R E C H N U N G &mdash; ZAHLUNGSSOLL</div>
+      </div>
+      <div class="header-right">
+        <div class="badge-id">RECHNUNG NR. FT-${ftId}</div>
+        <div class="date-info">Erstellt: ${dateStr}</div>
+      </div>
     </div>
-    <div class="meta-box">
-      <h3>🐷 Schuldner (Sau)</h3>
-      <p><strong>${escapeHtml(subName)}</strong></p>
-      <p class="small">@${escapeHtml(sub.username)} • Status: ZAHLENDER LOSER</p>
+
+    <div class="meta-grid">
+      <div class="meta-card">
+        <h3>${SVG_PDF_ICONS.crown} GLÄUBIGER (HERR)</h3>
+        <p>HERR</p>
+        <div class="small">Dein Herr und Gebieter • Eigentümer deines Geldes</div>
+      </div>
+      <div class="meta-card">
+        <h3>${SVG_PDF_ICONS.user} SCHULDNER (SAU)</h3>
+        <p>${escapeHtml(subName)}</p>
+        <div class="small">@${escapeHtml(sub.username)} • Status: ZAHLENDER LOSER</div>
+      </div>
+    </div>
+
+    <div class="period-bar">
+      ABRECHNUNGSZEITRAUM: KW ${invoiceKW} &mdash; ${invoiceWeekRange}
+    </div>
+
+    <table>
+      <thead>
+        <tr><th>POS.</th><th>LEISTUNG</th><th>MENGE</th><th class="ta-right">EINZELPREIS</th><th class="ta-right">GESAMT</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>1</td>
+          <td>Login-Gebühren (du zahlst fürs Anschauen, Loser)</td>
+          <td>${logins} Logins</td>
+          <td class="ta-right mono">${(cfg.perLogin || 1).toFixed(2).replace('.',',')}€</td>
+          <td class="ta-right mono">${loginCost.toFixed(2).replace('.', ',')}€</td>
+        </tr>
+        <tr>
+          <td>2</td>
+          <td>Zeit-Gebühren (jede Sekunde kostet dich Geld)</td>
+          <td>${formatDuration(seconds)}</td>
+          <td class="ta-right mono">${perSec.toFixed(4).replace('.',',')}€/Sek</td>
+          <td class="ta-right mono">${minuteCost.toFixed(2).replace('.', ',')}€</td>
+        </tr>
+        <tr>
+          <td>3</td>
+          <td>Fag-Tax Steuer ${penaltyBadge}</td>
+          <td>${yearTotal.toFixed(2).replace('.', ',')}€ Jahresbasis</td>
+          <td class="ta-right mono">${((doubleInt ? 0.06 : 0.03) * (doubleTax ? 2 : 1) * 100).toFixed(0)}%</td>
+          <td class="ta-right mono">${taxAmount.toFixed(2).replace('.', ',')}€</td>
+        </tr>
+        <tr>
+          <td>4</td>
+          <td>Kontoprüfungen (Neugier bestraft)</td>
+          <td>${checksCount} Prüfungen</td>
+          <td class="ta-right mono">1,00–3,99€/Stk</td>
+          <td class="ta-right mono">${checkCost.toFixed(2).replace('.', ',')}€</td>
+        </tr>
+        ${(carriedArr || []).map((c, idx) => `<tr>
+          <td>${5 + idx}</td>
+          <td>${SVG_PDF_ICONS.fire} Verzugszinsen aus Rechnung KW ${c.sourceKW} (vorgetragen)</td>
+          <td>—</td>
+          <td class="ta-right mono">—</td>
+          <td class="ta-right mono" style="color:#cc0000">${(c.amount || 0).toFixed(2).replace('.', ',')}€</td>
+        </tr>`).join('')}
+        ${interestAmount > 0 ? `<tr>
+          <td>${5 + (carriedArr || []).length}</td>
+          <td>${SVG_PDF_ICONS.fire} Verzugszinsen (täglich steigend, ${calculateLateInterestDays(existingFT ? existingFT.weekStart : null)} Tage verspätet)</td>
+          <td>—</td>
+          <td class="ta-right mono">—</td>
+          <td class="ta-right mono" style="color:#cc0000">${interestAmount.toFixed(2).replace('.', ',')}€</td>
+        </tr>` : ''}
+      </tbody>
+    </table>
+
+    <div class="total-container">
+      <div class="total-card">
+        <div class="label">GESAMTSCHULD</div>
+        <div class="amount">${totalStr} €</div>
+        <div class="words">in Worten: ${numberToGerman(grandTotal)} Euro</div>
+      </div>
+    </div>
+
+    <div class="insult-box">
+      <p>"${insult}"</p>
+    </div>
+
+    <div class="payment-info">
+      <h4>${SVG_PDF_ICONS.card} ZAHLUNGSINFORMATIONEN</h4>
+      <p><strong>IBAN:</strong> DE12 3456 7890 1234 5678 90 &bull; <strong>BIC:</strong> FINDOM01</p>
+      <p><strong>Verwendungszweck:</strong> <code>FT-${ftId} / ${escapeHtml(sub.username)}</code></p>
+      <div class="deadline">
+        ${SVG_PDF_ICONS.alert} ZAHLUNGSZIEL: SOFORT / OHNE VERZUG
+      </div>
+    </div>
+
+    <div class="signature">
+      <p>Mit der gebührenden Verachtung,</p>
+      <p class="name">${SVG_PDF_ICONS.crown} HERR</p>
+      <p style="font-size:7pt;color:#888;letter-spacing:1px">Dein Herr und Gebieter</p>
+    </div>
+
+    <div class="footer">
+      <p>FAG-TAX SYSTEM v3 &bull; Alle Preise inkl. Demütigung &bull; Kein Umtausch &bull; Kein Widerruf &bull; Nur Zahlung</p>
+      <p style="margin-top:2px">Diese Rechnung wurde automatisch generiert. Einspruch zwecklos.</p>
     </div>
   </div>
 
-  <div class="divider">✕ ✕ ✕ ✕ ✕</div>
-
-  <p style="font-size:9pt;color:#666;margin-bottom:12px;letter-spacing:2px">
-    ABRECHNUNGSZEITRAUM: KW ${invoiceKW} &mdash; ${invoiceWeekRange}
-  </p>
-
-  <table>
-    <thead>
-      <tr><th>POS.</th><th>LEISTUNG</th><th>MENGE</th><th class="ta-right">EINZELPREIS</th><th class="ta-right">GESAMT</th></tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td>1</td>
-        <td>Login-Gebühren (du zahlst fürs Anschauen, Loser)</td>
-        <td>${logins} Logins</td>
-        <td class="ta-right">${(cfg.perLogin || 1).toFixed(2).replace('.',',')}€</td>
-        <td class="ta-right">${loginCost.toFixed(2).replace('.', ',')}€</td>
-      </tr>
-      <tr>
-        <td>2</td>
-        <td>Zeit-Gebühren (jede Sekunde kostet dich Geld)</td>
-        <td>${formatDuration(seconds)}</td>
-        <td class="ta-right">${perSec.toFixed(4).replace('.',',')}€/Sek</td>
-        <td class="ta-right">${minuteCost.toFixed(2).replace('.', ',')}€</td>
-      </tr>
-      <tr>
-        <td>3</td>
-        <td>Fag-Tax Steuer (3% auf Jahrestribut)</td>
-        <td>${yearTotal.toFixed(2).replace('.', ',')}€ Jahresbasis</td>
-        <td class="ta-right">3%</td>
-        <td class="ta-right">${taxAmount.toFixed(2).replace('.', ',')}€</td>
-      </tr>
-      <tr>
-        <td>4</td>
-        <td>Kontoprüfungen (Neugier bestraft)</td>
-        <td>${accountChecks.filter(c => c.subId === sub.id && c.createdAt && c.createdAt.seconds && c.createdAt.seconds * 1000 >= ftWeekStart.getTime()).length} Prüfungen</td>
-        <td class="ta-right">1,00–3,99€/Stk</td>
-        <td class="ta-right">${checkCost.toFixed(2).replace('.', ',')}€</td>
-      </tr>
-      ${(carriedArr || []).map((c, idx) => `<tr>
-        <td>${5 + idx}</td>
-        <td>Verzugszinsen aus Rechnung KW ${c.sourceKW} (vorgetragen)</td>
-        <td>—</td>
-        <td class="ta-right">—</td>
-        <td class="ta-right" style="color:#cc0000">${(c.amount || 0).toFixed(2).replace('.', ',')}€</td>
-      </tr>`).join('')}
-      ${interestAmount > 0 ? `<tr>
-        <td>${5 + (carriedArr || []).length}</td>
-        <td>Verzugszinsen (täglich steigend, ${calculateLateInterestDays(existingFT ? existingFT.weekStart : null)} Tage verspätet)</td>
-        <td>—</td>
-        <td class="ta-right">—</td>
-        <td class="ta-right" style="color:#cc0000">${interestAmount.toFixed(2).replace('.', ',')}€</td>
-      </tr>` : ''}
-    </tbody>
-  </table>
-
-  <table>
-    <tr class="total-row">
-      <td colspan="4" style="text-align:right;font-weight:900;letter-spacing:4px">GESAMTSCHULD:</td>
-      <td class="ta-right amount" style="font-weight:900;color:#cc0000;font-size:18pt">${totalStr}€</td>
-    </tr>
-    <tr><td colspan="5" style="text-align:center;color:#999;font-size:8pt;padding-top:4px;letter-spacing:2px">
-      in Worten: ${numberToGerman(grandTotal)} Euro
-    </td></tr>
-  </table>
-
-  <div class="insult-box">
-    <p>"${insult}"</p>
-  </div>
-
-  <div class="payment-info">
-    <h4>💳 Zahlungsinformationen</h4>
-    <p><strong>IBAN:</strong> DE12 3456 7890 1234 5678 90</p>
-    <p><strong>BIC:</strong> FINDOM01</p>
-    <p><strong>Verwendungszweck:</strong> <code>FT-${ftId} / ${escapeHtml(sub.username)}</code></p>
-    <p style="margin-top:8px;color:#cc0000;font-weight:900;">⚠ Zahlungsziel: SOFORT / OHNE VERZUG</p>
-  </div>
-
-  <div class="signature">
-    <p>Mit der gebührenden Verachtung,</p>
-    <p class="name">👑 HERR</p>
-    <p style="font-size:8pt;color:#999;letter-spacing:2px">Dein Herr und Gebieter</p>
-  </div>
-
-  <div class="footer">
-    <p>FAG-TAX SYSTEM v3 • Alle Preise inkl. Demütigung • Kein Umtausch • Kein Widerruf • Nur Zahlung</p>
-    <p style="margin-top:2px">Diese Rechnung wurde automatisch generiert. Einspruch zwecklos.</p>
-  </div>
-  </div>
-
-  <div class="no-print" style="text-align:center;margin-top:20px;padding:12px;background:#eee;border-radius:4px">
+  <div class="no-print" style="text-align:center;margin-top:16px;padding:12px;background:#eee;border-radius:4px">
     <button onclick="window.print()" style="padding:12px 40px;background:#cc0000;color:#fff;border:none;border-radius:4px;font-size:14px;cursor:pointer;font-weight:900;letter-spacing:3px">📄 ALS PDF DRUCKEN / SPEICHERN</button>
     <p style="margin-top:8px;font-size:9px;color:#999">Oder Strg+P / Cmd+P</p>
   </div>
@@ -1870,22 +2183,44 @@ function generateFagTaxInvoice(sub, logins, seconds, loginCost, minuteCost, taxA
   if (isMobile && typeof html2pdf !== 'undefined') {
     const container = document.createElement('div');
     container.innerHTML = html;
-    container.style.position = 'absolute';
+    container.style.position = 'fixed';
+    container.style.top = '0';
     container.style.left = '-9999px';
+    container.style.width = '750px';
+    container.style.pointerEvents = 'none';
+    container.style.zIndex = '-9999';
     document.body.appendChild(container);
 
-    html2pdf().from(container).set({
-      margin: [10, 12, 10, 12],
-      filename: `FAG-TAX_KW${invoiceKW}_${subName.replace(/\s+/g, '_')}.pdf`,
-      html2canvas: { scale: 2, useCORS: true },
-      jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
-    }).save().then(() => {
-      document.body.removeChild(container);
-      showToast('PDF heruntergeladen 📄', 'success');
+    const filename = `FAG-TAX_KW${invoiceKW}_${subName.replace(/\s+/g, '_')}.pdf`;
+    const opt = {
+      margin: [6, 8, 6, 8],
+      filename: filename,
+      image: { type: 'jpeg', quality: 0.98 },
+      html2canvas: { scale: 2, useCORS: true, logging: false, windowWidth: 770 },
+      jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+      pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
+    };
+
+    html2pdf().from(container).set(opt).toPdf().get('pdf').then(pdf => {
+      const blob = pdf.output('blob');
+      if (container.parentNode) document.body.removeChild(container);
+
+      const file = new File([blob], filename, { type: 'application/pdf' });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        navigator.share({
+          files: [file],
+          title: `Fag-Tax Rechnung KW ${invoiceKW}`,
+          text: `Fag-Tax Rechnung KW ${invoiceKW} für ${subName}`
+        }).catch(() => {
+          downloadBlobFallback(blob, filename);
+        });
+      } else {
+        downloadBlobFallback(blob, filename);
+      }
+      showToast('PDF generiert 📄', 'success');
     }).catch(err => {
-      document.body.removeChild(container);
+      if (container.parentNode) document.body.removeChild(container);
       console.error('PDF generation failed:', err);
-      // Fallback to window.open
       const w = window.open('', '_blank');
       if (w) { w.document.write(html); w.document.close(); }
     });
@@ -1896,6 +2231,19 @@ function generateFagTaxInvoice(sub, logins, seconds, loginCost, minuteCost, taxA
     w.document.write(html);
     w.document.close();
   }
+}
+
+function downloadBlobFallback(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => {
+    if (a.parentNode) document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, 1000);
 }
 
 function numberToGerman(n) {
@@ -1939,22 +2287,27 @@ function startPaymentListener() {
   paymentsTbody.innerHTML = '<tr><td colspan="6" class="loading-cell">LADE ZAHLUNGEN...</td></tr>';
   let query = currentUser.role === 'dom'
     ? db.collection('payments').orderBy('createdAt', 'desc')
-    : db.collection('payments').where('paidBy', '==', currentUser.username);
+    : (currentUser.uid || currentUser.id
+        ? db.collection('payments').where('subId', '==', currentUser.uid || currentUser.id)
+        : db.collection('payments').where('paidBy', '==', currentUser.username));
   unsubscribePayments = query.onSnapshot(snap => {
     payments = [];
     snap.forEach(doc => payments.push({ id: doc.id, ...doc.data() }));
     if (currentUser.role !== 'dom') {
-      payments.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+      payments.sort((a, b) => toMs(b.createdAt) - toMs(a.createdAt));
     }
     renderPayments();
     updateTotals();
-    if (currentUser.role === 'dom') renderFagTaxOverview();
+    if (currentUser.role === 'dom') {
+      renderDomPendingCheckins();
+      renderFagTaxOverview();
+    }
   }, error => {
     paymentsTbody.innerHTML = `<tr><td colspan="6" class="loading-cell" style="color:var(--red)">FEHLER: ${escapeHtml(error.message)}</td></tr>`;
   });
 }
 
-async function addPayment(amount, category, description, subId, dateStr) {
+async function addPayment(amount, category, description, subId, dateStr, loanId) {
   const sub = subs.find(s => s.id === subId);
   const paidBy = sub ? sub.username : 'sub';
   let createdAt;
@@ -1971,13 +2324,38 @@ async function addPayment(amount, category, description, subId, dateStr) {
       console.warn('Invalid payment amount:', amount);
       return false;
     }
-    await db.collection('payments').add({
-      amount: round2(parsedAmount), category, description: description.trim(),
+    const isDom = currentUser && currentUser.role === 'dom';
+    const confirmed = isDom ? true : false;
+    const status = isDom ? 'confirmed' : 'pending_confirmation';
+
+    const paymentDoc = {
+      amount: round2(parsedAmount), category, description: (description || '').trim(),
       createdAt,
-      paidBy, subId: subId || null, createdBy: currentUser.role
-    });
+      paidBy, subId: subId || null, createdBy: currentUser ? currentUser.role : 'sub',
+      confirmed, status
+    };
+    if (loanId) paymentDoc.loanId = loanId;
+
+    await db.collection('payments').add(paymentDoc);
     return true;
   } catch (e) { return false; }
+}
+
+function getLoanPayments(lc) {
+  if (!lc || !lc.id) return [];
+  const curSubId = currentUser ? (currentUser.id || currentUser.uid) : lc.subId;
+  const fullLoanId = lc.id;
+
+  return payments.filter(p => {
+    const matchSub = p.subId === lc.subId || p.subId === curSubId || p.paidBy === lc.username;
+    if (!matchSub) return false;
+
+    const isLoanCat = p.category === 'darlehen' || (p.description || '').toLowerCase().includes('darlehen');
+    if (!isLoanCat) return false;
+
+    // Only assign payment if the loanId explicitly matches, to prevent older payments from being merged
+    return p.loanId === fullLoanId;
+  });
 }
 
 async function deletePayment(id) {
@@ -1988,44 +2366,70 @@ async function deletePayment(id) {
 // RENDERING
 // =============================================
 function renderDashboard() {
+  bindGlobalButtons();
+  const subPanel = document.getElementById('sub-panel');
   if (currentUser.role === 'dom') {
     dashTitle.textContent = '👑 DEIN EINKOMMEN, HERR';
     dashSubtitle.textContent = 'Deine Säue. Ihr Geld. Dein Besitz.';
     domPanel.style.display = 'block';
     domPanel.classList.remove('hidden');
+    if (subPanel) { subPanel.style.display = 'none'; subPanel.classList.add('hidden'); }
     actionTh.style.display = 'table-cell';
     actionTh.classList.remove('hidden');
     thSub.style.display = 'table-cell';
     thSub.classList.remove('hidden');
+    renderDomPendingCheckins();
+    renderFagTaxOverview();
+    renderDomFagTaxInvoices();
+    renderDomLoansOverview();
+    renderDomWheelOverview();
+    renderDomShopOverview();
   } else {
     const name = currentUser.displayName || currentUser.username;
     dashTitle.textContent = `🐷 DEINE DIENSTE, ${name.toUpperCase()}`;
     dashSubtitle.textContent = 'Kriech her und sieh, was du deinem Herrn gegeben hast. Loser.';
     domPanel.style.display = 'none';
     domPanel.classList.add('hidden');
+    if (subPanel) { subPanel.style.display = 'block'; subPanel.classList.remove('hidden'); }
     actionTh.style.display = 'none';
     actionTh.classList.add('hidden');
     thSub.style.display = 'none';
     thSub.classList.add('hidden');
+    renderSubFagTaxInvoices();
+    renderSubLoansView();
+    renderWheelCanvas();
+    setTimeout(renderWheelCanvas, 200);
+    renderWheelPendingNotices();
+    renderTributeTicker();
+    renderSubShopOverview();
   }
   userBadge.textContent = currentUser.icon + ' ' + (currentUser.displayName || currentUser.label);
+  checkAndApplyMahnstufen();
 }
 
 function renderPayments() {
+  const isDom = currentUser.role === 'dom';
+
+  // For Subs: Hide payment history table unless account check has been unlocked in current session
+  if (!isDom && !lastCheckSessions) {
+    paymentsTbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:30px;color:var(--text-dim);font-weight:700">🔒 ZAHLUNGSVERLAUF GESPERRT<br><span style="font-size:0.75rem;font-weight:normal;color:var(--text-muted)">Schalte deine Kontoübersicht oben per "KONTO PRÜFEN" frei.</span></td></tr>';
+    emptyState.style.display = 'none';
+    return;
+  }
+
   let filtered = payments;
-  if (currentUser.role === 'dom' && filterSubId !== 'all')
+  if (isDom && filterSubId !== 'all')
     filtered = payments.filter(p => p.subId === filterSubId || p.paidBy === filterSubId);
 
   if (filtered.length === 0) {
     paymentsTbody.innerHTML = '';
     emptyState.style.display = 'block';
-    emptyState.textContent = currentUser.role === 'dom'
+    emptyState.textContent = isDom
       ? 'Diese Sau hat noch nichts gezahlt. Zerdrücke sie.'
       : 'Du hast noch NICHTS gezahlt? Dein Herr wartet. Loser.';
     return;
   }
   emptyState.style.display = 'none';
-  const isDom = currentUser.role === 'dom';
 
   paymentsTbody.innerHTML = filtered.map(p => {
     const raw = parseFloat(p.amount) || 0;
@@ -2091,90 +2495,198 @@ function updateTotals() {
 // =============================================
 // SUBS UI
 // =============================================
+// --- DEMÜTIGENDER SCHULDENAUSZUG PDF GENERATOR ---
+function generateSubHumiliationStatementPDF(sub) {
+  const name = sub.displayName || sub.username;
+  const subPayments = payments.filter(p => p.subId === sub.id || p.paidBy === sub.username);
+  const totalPaid = subPayments.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
+
+  const myLoans = loanContracts.filter(l => l.subId === sub.id);
+  const totalLoanPrincipal = myLoans.reduce((s, l) => s + (l.principal || 0) + (l.addonsSum || 0), 0);
+
+  const openFagTaxes = fagTaxes.filter(f => f.subId === sub.id && !f.paid);
+  const totalOpenFagTax = openFagTaxes.reduce((s, f) => s + (f.totalAmount || 0), 0);
+
+  const openSpins = wheelSpins.filter(w => (w.subId === sub.id || w.username === sub.username) && !w.paid);
+  const totalOpenWheel = openSpins.reduce((s, w) => s + (w.prizeAmount || 0), 0);
+
+  const totalOpenDebt = totalOpenFagTax + totalOpenWheel + Math.max(0, totalLoanPrincipal - totalPaid);
+
+  const html = `<!DOCTYPE html>
+<html lang="de"><head><meta charset="UTF-8"><title>SCHULDENAUSZUG ${escapeHtml(name.toUpperCase())}</title>
+<style>
+  @page { margin: 15mm; size: A4; }
+  body { font-family: 'Courier New', monospace; font-size: 9pt; line-height: 1.4; color: #000; padding: 20px; }
+  .header { border-bottom: 3px solid #cc0000; text-align: center; padding-bottom: 12px; margin-bottom: 20px; }
+  .header h1 { color: #cc0000; font-size: 16pt; text-transform: uppercase; letter-spacing: 3px; }
+  .badge { background: #000; color: #fff; padding: 4px 8px; font-weight: bold; }
+  .section { border: 1px solid #000; padding: 10px; margin-bottom: 12px; }
+  .title { font-weight: bold; background: #eee; padding: 4px; text-transform: uppercase; border-bottom: 1px solid #000; }
+  .danger { color: #cc0000; font-weight: bold; }
+</style></head><body>
+  <div class="header">
+    <h1>${SVG_PDF_ICONS.document} OFFIZIELLER DEMÜTIGUNGS- & SCHULDENAUSZUG</h1>
+    <p>SCHWEINE-AKTE: <strong>@${escapeHtml(sub.username)}</strong> (${escapeHtml(name)})</p>
+    <p>ERSTELLT AM: ${new Date().toLocaleString('de-DE')}</p>
+  </div>
+
+  <div class="section">
+    <div class="title">1. FINANZIELLER GESAMT-STATUS</div>
+    <p>Bisher geleisteter Gesamttribut an den Herrn: <strong style="color:green">${totalPaid.toFixed(2).replace('.', ',')}€</strong></p>
+    <p>Aktuell offene Gesamtschulden & Strafen: <strong class="danger">${totalOpenDebt.toFixed(2).replace('.', ',')}€</strong></p>
+  </div>
+
+  <div class="section">
+    <div class="title">2. OFFENE POSTEN & VERPFLICHTUNGEN</div>
+    <p>• Offene FagTax-Wochenrechnungen: ${totalOpenFagTax.toFixed(2).replace('.', ',')}€</p>
+    <p>• Offene Glücksrad-Strafen: ${totalOpenWheel.toFixed(2).replace('.', ',')}€ (${openSpins.length} Strafen ausstehend)</p>
+    <p>• Laufende Darlehensverträge: ${myLoans.length} Vertrag/Verträge</p>
+  </div>
+
+  <div class="section" style="border:2px solid #cc0000;background:#fff5f5">
+    <div class="title" style="background:#cc0000;color:#fff">3. ERGEBENHEITS-KLAUSEL</div>
+    <p class="danger">DAS SCHWEIN ERKLÄRT SICH BEDINGUNGSLOS BEREIT, ALLE BESCHLOSSENEN STRAFEN UND TRIBUTE BINNEN 24 STUNDEN AN DEN HERRN ZU BEZAHLEN. VERZUG FÜHRT ZUR SOFORTIGEN MAHNSTUFEN-ERHÖHUNG UND INKASSO-ÜBERMITTLUNG.</p>
+  </div>
+
+  <div style="margin-top:40px;display:flex;justify-content:space-between">
+    <div style="border-top:1px solid #000;width:40%;text-align:center;padding-top:4px">${SVG_PDF_ICONS.crown} GEBIETER & HERR</div>
+    <div style="border-top:1px solid #000;width:40%;text-align:center;padding-top:4px">${SVG_PDF_ICONS.user} ${escapeHtml(name)} (Unterworfen)</div>
+  </div>
+</body></html>`;
+
+  const w = window.open('', '_blank');
+  if (w) { w.document.write(html); w.document.close(); }
+}
+
+// =============================================
+// SUBS UI (SCHWEINESTALL / PROFILE)
+// =============================================
 function renderSubs() {
   const active = subs.filter(s => s.active !== false);
   if (active.length === 0) { subsList.innerHTML = '<p class="empty-subs">Noch keine Säue angelegt.</p>'; return; }
 
-  subsList.innerHTML = active.map(s => {
+  // Sort subs by total tribute paid (ranking)
+  const rankedSubs = [...active].map(s => {
     const totalPaid = payments.filter(p => p.subId === s.id || p.paidBy === s.username)
       .reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
+    return { sub: s, totalPaid };
+  }).sort((a, b) => b.totalPaid - a.totalPaid);
+
+  subsList.innerHTML = rankedSubs.map((item, rankIdx) => {
+    const s = item.sub;
+    const totalPaid = item.totalPaid;
     const totalStr = totalPaid.toFixed(2).replace('.', ',') + '€';
     const cfg = getSubFagConfig(s);
     const isEditing = editingSubId === s.id;
 
+    // Determine humiliation rank title
+    let rankBadge = '🐷 WERTFRAGWÜRDIGES SCHWEIN';
+    let rankColor = 'var(--text-dim)';
+    if (rankIdx === 0 && totalPaid > 0) { rankBadge = '🏆 GOLD-SAU (TOP-ZAHLSCHWEIN)'; rankColor = '#ffd700'; }
+    else if (rankIdx === 1 && totalPaid > 0) { rankBadge = '🥈 SILBER-SCHWEIN'; rankColor = '#c0c0c0'; }
+    else if (totalPaid > 100) { rankBadge = '🥉 ERTRAGREICHE SAU'; rankColor = '#cd7f32'; }
+
+    // Calculate open debts for this sub
+    const openFTs = fagTaxes.filter(f => f.subId === s.id && !f.paid);
+    const openFTTotal = openFTs.reduce((sum, f) => sum + (f.totalAmount || 0), 0);
+    const openSpins = wheelSpins.filter(w => (w.subId === s.id || w.username === s.username) && !w.paid);
+    const openSpinsTotal = openSpins.reduce((sum, w) => sum + (w.prizeAmount || 0), 0);
+    const totalDebt = openFTTotal + openSpinsTotal;
+
     if (isEditing) {
-      return `<div class="sub-edit-row" data-id="${s.id}">
-        <div class="sub-edit-fields">
-          <input type="text" class="sub-edit-user" value="${escapeHtml(s.username)}" placeholder="Benutzername">
-          <input type="text" class="sub-edit-name" value="${escapeHtml(s.displayName || s.username)}" placeholder="Anzeigename">
-          <input type="text" class="sub-edit-pw" value="${escapeHtml(s.password || '')}" placeholder="Passwort">
+      return `<div class="sub-edit-row" data-id="${s.id}" style="padding:12px;background:var(--bg-surface);border:1px solid var(--border);border-radius:4px;margin-bottom:10px">
+        <div class="sub-edit-fields" style="display:flex;flex-direction:column;gap:6px">
+          <input type="text" class="sub-edit-user" value="${escapeHtml(s.username)}" placeholder="Benutzername" style="padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text)">
+          <input type="text" class="sub-edit-name" value="${escapeHtml(s.displayName || s.username)}" placeholder="Anzeigename" style="padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text)">
+          <input type="text" class="sub-edit-pw" value="${escapeHtml(s.password || '')}" placeholder="Passwort" style="padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text)">
         </div>
-        <div class="sub-edit-actions">
-          <button class="btn btn--sm btn--success" data-id="${s.id}">💾</button>
-          <button class="btn btn--sm btn--ghost">✕</button>
+        <div class="sub-edit-actions" style="margin-top:8px;display:flex;gap:6px">
+          <button class="btn btn--sm btn--success" data-id="${s.id}">💾 SPEICHERN</button>
+          <button class="btn btn--sm btn--ghost">✕ ABBRECHEN</button>
         </div>
       </div>`;
     }
 
-    return `<div class="sub-row" data-id="${s.id}">
-      <div class="sub-info">
-        <span class="sub-name">🐷 ${escapeHtml(s.displayName || s.username)}</span>
-        <span class="sub-uname">@${escapeHtml(s.username)}</span>
-        <span class="sub-total" style="color:var(--red)">${totalStr}</span>
+    return `<div class="sub-card" data-id="${s.id}" style="padding:14px;background:var(--bg-surface);border:1.5px solid var(--border);margin-bottom:12px;border-radius:6px">
+      <!-- HEADER ROW WITH RANK & ACTIONS -->
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <div>
+          <div style="font-weight:900;font-size:1rem;color:var(--text)">🐷 ${escapeHtml(s.displayName || s.username)} <span style="font-size:0.75rem;color:var(--text-dim)">(@${escapeHtml(s.username)})</span></div>
+          <div style="font-size:0.75rem;font-weight:800;color:${rankColor};margin-top:2px">${rankBadge}</div>
+        </div>
+        <div class="sub-actions" style="display:flex;gap:4px;flex-wrap:wrap">
+          <button class="btn btn--sm btn--orange btn-demand-tribute" data-id="${s.id}" data-name="${escapeHtml(s.displayName || s.username)}" title="Demütigende Strafe verhängen">🙇 STRAFE</button>
+          <button class="btn btn--sm btn--cyan btn-sub-statement" data-id="${s.id}" title="Schuldenauszug PDF">📄 AKTE</button>
+          <button class="btn btn--sm btn--primary btn-edit-sub" data-id="${s.id}" title="Bearbeiten">✎</button>
+          <button class="btn btn--sm btn--danger btn-delete-sub" data-id="${s.id}" title="Löschen">🗑</button>
+        </div>
       </div>
-      <div class="sub-actions">
-        <button class="btn btn--sm btn--primary" data-id="${s.id}" title="Bearbeiten">✎</button>
-        <button class="btn btn--sm btn--danger" data-id="${s.id}" title="Löschen">🗑</button>
+
+      <!-- STATS GRID -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px;padding:8px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px;font-size:0.75rem">
+        <div>💰 Gesamttribut: <strong style="color:var(--green);font-size:0.85rem">${totalStr}</strong></div>
+        <div>🔥 Offener Rückstand: <strong style="color:var(--red);font-size:0.85rem">${totalDebt.toFixed(2).replace('.', ',')}€</strong></div>
+        <div>📋 Offene FagTaxes: <strong>${openFTs.length}</strong> (${openFTTotal.toFixed(2)}€)</div>
+        <div>🎰 Offene Glücksradstrafen: <strong>${openSpins.length}</strong> (${openSpinsTotal.toFixed(2)}€)</div>
       </div>
-      <div class="sub-config-row">
-        <label class="sub-config-toggle">
-          <input type="checkbox" class="cfg-toggle" data-id="${s.id}" data-key="enabled" ${cfg.enabled ? 'checked' : ''}> FAG-TAX
-        </label>
-        <label class="sub-config-toggle">
-          <input type="checkbox" class="cfg-toggle" data-id="${s.id}" data-key="loginsEnabled" ${cfg.loginsEnabled ? 'checked' : ''}> LOGINS
-        </label>
-        <label class="sub-config-toggle">
-          <input type="checkbox" class="cfg-toggle" data-id="${s.id}" data-key="minutesEnabled" ${cfg.minutesEnabled ? 'checked' : ''}> MINUTEN
-        </label>
-        <label class="sub-config-toggle">
-          <input type="checkbox" class="cfg-toggle" data-id="${s.id}" data-key="taxEnabled" ${cfg.taxEnabled ? 'checked' : ''}> STEUER
-        </label>
-        <label class="sub-config-toggle">
-          <input type="checkbox" class="cfg-toggle" data-id="${s.id}" data-key="counterVisible" ${cfg.counterVisible ? 'checked' : ''}> ZÄHLER
-        </label>
+
+      <!-- CONFIG TOGGLES -->
+      <div class="sub-config-row" style="margin-top:8px;display:flex;gap:10px;flex-wrap:wrap;font-size:0.7rem;color:var(--text-dim)">
+        <label class="sub-config-toggle"><input type="checkbox" class="cfg-toggle" data-id="${s.id}" data-key="enabled" ${cfg.enabled ? 'checked' : ''}> FAG-TAX AKTIERT</label>
+        <label class="sub-config-toggle"><input type="checkbox" class="cfg-toggle" data-id="${s.id}" data-key="loginsEnabled" ${cfg.loginsEnabled ? 'checked' : ''}> LOGINS</label>
+        <label class="sub-config-toggle"><input type="checkbox" class="cfg-toggle" data-id="${s.id}" data-key="minutesEnabled" ${cfg.minutesEnabled ? 'checked' : ''}> MINUTEN</label>
+        <label class="sub-config-toggle"><input type="checkbox" class="cfg-toggle" data-id="${s.id}" data-key="taxEnabled" ${cfg.taxEnabled ? 'checked' : ''}> STEUER</label>
+        <label class="sub-config-toggle"><input type="checkbox" class="cfg-toggle" data-id="${s.id}" data-key="counterVisible" ${cfg.counterVisible ? 'checked' : ''}> ZÄHLER</label>
       </div>
     </div>`;
   }).join('');
 
-  qsa('.sub-actions .btn--primary[title="Bearbeiten"]').forEach(b => {
-    b.addEventListener('click', () => { editingSubId = b.dataset.id; renderSubs(); });
+  qsa('.btn-demand-tribute').forEach(b => {
+    b.onclick = () => {
+      openManualPaymentModal(b.dataset.id, 'strafe', `Gehorsamkeits-Strafe für ${b.dataset.name}`, 25);
+    };
   });
+
+  qsa('.btn-sub-statement').forEach(b => {
+    b.onclick = () => {
+      const s = subs.find(x => x.id === b.dataset.id);
+      if (s) generateSubHumiliationStatementPDF(s);
+    };
+  });
+
+  qsa('.btn-edit-sub').forEach(b => {
+    b.onclick = () => { editingSubId = b.dataset.id; renderSubs(); };
+  });
+
   qsa('.sub-edit-actions .btn--success').forEach(b => {
-    b.addEventListener('click', async () => {
+    b.onclick = async () => {
       const row = b.closest('.sub-edit-row');
       const user = qs('.sub-edit-user', row).value;
       const name = qs('.sub-edit-name', row).value;
       const pw = qs('.sub-edit-pw', row).value;
       let ok = true;
-      if (user) { const r = await updateSubUsername(b.dataset.id, user); if (!r) { showAlert('FEHLER', 'Benutzername ungültig oder bereits vergeben!'); ok = false; } }
+      if (user) { const r = await updateSubUsername(b.dataset.id, user); if (!r) { showAlert('FEHLER', 'Benutzername ungültig oder vergeben!'); ok = false; } }
       if (ok && name) { const r = await updateSubDisplay(b.dataset.id, name); if (!r) { showAlert('FEHLER', 'Name ungültig!'); ok = false; } }
-      if (ok && pw) { if (pw.length < 3) { showAlert('FEHLER', 'Passwort muss mind. 3 Zeichen haben!'); ok = false; } else { await updateSubPassword(b.dataset.id, pw); } }
+      if (ok && pw) { if (pw.length < 3) { showAlert('FEHLER', 'Passwort zu kurz!'); ok = false; } else { await updateSubPassword(b.dataset.id, pw); } }
       if (ok) editingSubId = null;
-    });
+    };
   });
+
   qsa('.sub-edit-actions .btn--ghost').forEach(b => {
-    b.addEventListener('click', () => { editingSubId = null; renderSubs(); });
+    b.onclick = () => { editingSubId = null; renderSubs(); };
   });
-  qsa('.sub-actions .btn--danger[title="Löschen"]').forEach(b => {
-    b.addEventListener('click', async () => {
-      const ok = await showConfirm('SAU LÖSCHEN', 'Diese Sau + alle Zahlungen/Sessions/FagTaxes wirklich ENDGÜLTIG löschen?');
+
+  qsa('.btn-delete-sub').forEach(b => {
+    b.onclick = async () => {
+      const ok = await showConfirm('SAU ENTFERNEN', 'Diese Sau + alle Zahlungen/Sessions wirklich ENDGÜLTIG löschen?');
       if (ok) deleteSub(b.dataset.id);
-    });
+    };
   });
+
   qsa('.cfg-toggle').forEach(cb => {
-    cb.addEventListener('change', async () => {
+    cb.onclick = async () => {
       await updateSubFagTax(cb.dataset.id, { [cb.dataset.key]: cb.checked });
-    });
+    };
   });
 }
 
@@ -2375,13 +2887,16 @@ function renderFagTaxOverview() {
           else if (typeof existingFT.paidAt === 'string') paidDateStr = new Date(existingFT.paidAt).toLocaleDateString('de-DE');
         }
         statusStr = `<span style="color:var(--green);font-weight:900">✅ ${paidDateStr}</span>`;
-        actionsStr = ftId ? `<button class="btn btn--sm btn--cyan" data-ftid="${ftId}">📄 PDF</button>` : '';
+        actionsStr = `
+          <button class="btn btn--sm btn--orange btn-edit-ft" data-ftid="${ftId || ''}" data-subid="${sub.id}" data-amt="${totalAmount}">✏️ ANPASSEN</button>
+          ${ftId ? `<button class="btn btn--sm btn--cyan" data-ftid="${ftId}">📄 PDF</button>` : ''}
+        `;
       } else {
         statusStr = `<span style="color:var(--red);font-weight:900">❌ OFFEN</span>`;
-        actionsStr = ftId
-          ? `<button class="btn btn--sm btn--success" data-ftid="${ftId}">BEZAHLT</button>
-             <button class="btn btn--sm btn--cyan" data-ftid="${ftId}">📄 PDF</button>`
-          : '<span style="color:var(--text-dim);font-size:0.65rem">–</span>';
+        actionsStr = `
+          <button class="btn btn--sm btn--orange btn-edit-ft" data-ftid="${ftId || ''}" data-subid="${sub.id}" data-amt="${totalAmount}">✏️ ANPASSEN</button>
+          ${ftId ? `<button class="btn btn--sm btn--success" data-ftid="${ftId}">BEZAHLT</button><button class="btn btn--sm btn--cyan" data-ftid="${ftId}">📄 PDF</button>` : `<button class="btn btn--sm btn--primary btn-mark-manual-ft" data-subid="${sub.id}" data-amt="${totalAmount}">💳 ZAHLUNG</button>`}
+        `;
       }
 
       // Format time
@@ -2468,18 +2983,13 @@ function renderFagTaxOverview() {
 
         const carried = ft.carriedInterest || [];
         const carriedSum = carried.reduce((s, c) => s + (c.amount || 0), 0);
-        const paidIntAmt = ft.interestAmount || 0;
-        const totalPaid = ft.totalWithInterest || (baseAmount + carriedSum);
 
-        let statusStr = '';
-        let actionsStr = '';
         let intColHTML = '<span style="color:var(--text-dim)">0,00€</span>';
         if (isPaid) {
-          if (paidIntAmt > 0) {
-            intColHTML = `<span style="color:var(--purple);font-weight:900">${paidIntAmt.toFixed(2).replace('.',',')}€</span>`;
-          } else {
-            intColHTML = '<span style="color:var(--text-dim);font-size:0.65rem">—</span>';
-          }
+          const paidIntAmt = ft.interestAmount || 0;
+          intColHTML = paidIntAmt > 0
+            ? `<span style="color:var(--purple);font-weight:900">${paidIntAmt.toFixed(2).replace('.',',')}€</span>`
+            : '<span style="color:var(--text-dim);font-size:0.65rem">—</span>';
         } else if (carried.length > 0) {
           const lines = carried.map(c =>
             `<div style="font-size:0.65rem;line-height:1.4">Zinsen KW ${c.sourceKW}: <strong>${(c.amount || 0).toFixed(2).replace('.',',')}€</strong></div>`
@@ -2487,6 +2997,7 @@ function renderFagTaxOverview() {
           intColHTML = `<div style="color:var(--purple);font-weight:700">${lines}</div>`;
         }
 
+        let statusStr, actionsStr;
         if (isPaid) {
           let paidDateStr = '?';
           if (ft.paidAt) {
@@ -2495,17 +3006,21 @@ function renderFagTaxOverview() {
             else if (typeof ft.paidAt === 'string') paidDateStr = new Date(ft.paidAt).toLocaleDateString('de-DE');
           }
           statusStr = `<span style="color:var(--green);font-weight:900">✅ ${paidDateStr}</span>`;
-          actionsStr = `<button class="btn btn--sm btn--cyan" data-ftid="${ft.id}">📄 PDF</button>`;
+          actionsStr = `
+            <button class="btn btn--sm btn--orange btn-edit-ft" data-ftid="${ft.id}" data-subid="${ft.subId}" data-amt="${ft.totalAmount}">✏️ ANPASSEN</button>
+            <button class="btn btn--sm btn--cyan" data-ftid="${ft.id}">📄 PDF</button>
+          `;
         } else {
           statusStr = `<span style="color:var(--red);font-weight:900">❌ OFFEN</span>`;
           actionsStr = `
+            <button class="btn btn--sm btn--orange btn-edit-ft" data-ftid="${ft.id}" data-subid="${ft.subId}" data-amt="${ft.totalAmount}">✏️ ANPASSEN</button>
             <button class="btn btn--sm btn--success" data-ftid="${ft.id}">BEZAHLT</button>
             <button class="btn btn--sm btn--cyan" data-ftid="${ft.id}">📄 PDF</button>
           `;
         }
 
         const baseStr = baseAmount.toFixed(2).replace('.', ',') + '€';
-        const totalStr = (isPaid ? totalPaid : (baseAmount + carriedSum)).toFixed(2).replace('.', ',') + '€';
+        const totalStr = (isPaid ? (ft.totalWithInterest || ft.totalAmount) : (baseAmount + carriedSum)).toFixed(2).replace('.', ',') + '€';
 
         html += `<tr>
           <td data-label="SAU"><span class="ft-sub-link" data-subid="${ft.subId}" data-ftid="${ft.id}" data-weekstart="${ft.weekStart?.seconds ? ft.weekStart.seconds * 1000 : ''}" style="cursor:pointer;border-bottom:1px dashed var(--text-dim)">🐷 ${escapeHtml(name)}</span></td>
@@ -2531,10 +3046,22 @@ function renderFagTaxOverview() {
   html += '</div>';
   fagTaxOverview.innerHTML = html;
 
-  // #6: Event delegation — single handler on container instead of per-element listeners
+  // Event delegation
   fagTaxOverview.onclick = (e) => {
-    const target = e.target.closest('[data-ftid], .ft-sub-link, #btn-export-unpaid');
+    const target = e.target.closest('[data-ftid], .ft-sub-link, #btn-export-unpaid, .btn-edit-ft, .btn-mark-manual-ft');
     if (!target) return;
+
+    // "ANPASSEN" button
+    if (target.classList.contains('btn-edit-ft')) {
+      openEditFagTaxModal(target.dataset.ftid, target.dataset.subid, parseFloat(target.dataset.amt) || 0);
+      return;
+    }
+
+    // "ZAHLUNG BUCHEN" button
+    if (target.classList.contains('btn-mark-manual-ft')) {
+      openManualPaymentModal(target.dataset.subid, 'fagtax', 'FagTax Zahlung', target.dataset.amt);
+      return;
+    }
 
     // Sub name link → show details
     if (target.classList.contains('ft-sub-link')) {
@@ -2654,6 +3181,9 @@ function renderSubFagTaxView() {
           Du willst wissen, wie tief du diese Woche schon steckst?<br>Dafür zahlst du. Neugier hat ihren Preis.
         </p>
         <button id="btn-sub-check-account" class="btn-check-account">🔍 KONTO PRÜFEN (1–3€ GEBÜHR)</button>
+        <div style="margin-top:10px">
+          <button id="btn-sub-reset-fagtax" class="btn btn--sm btn--danger" style="font-weight:900;letter-spacing:1px;padding:8px 16px;border-radius:4px">🔄 FAG-TAX VERLAUF AUF 0€ ZURÜCKSETZEN</button>
+        </div>
       </div>
     </section>
   `;
@@ -2667,8 +3197,187 @@ function renderSubFagTaxView() {
     checkBtn.addEventListener('click', subCheckAccount);
   }
 
-  // Render history below
+  const resetBtn = $('btn-sub-reset-fagtax');
+  if (resetBtn) {
+    resetBtn.addEventListener('click', startFagTaxResetTrap);
+  }
+
+  // Render history and invoices below
   renderSubFagTaxHistory();
+  renderSubFagTaxInvoices();
+}
+
+// --- FAG-TAX RESET PSYCHOLOGICAL TRAP (10 STEPS + PRAISE, 1€ PER CLICK) ---
+const RESET_TRAP_STEPS = [
+  {
+    step: 1,
+    title: '🔄 FAG-TAX VERLAUF AUF 0,00€ ZURÜCKSETZEN?',
+    msg: 'Möchtest du wirklich deinen gesamten Fag-Tax Verlauf und alle aufgelaufenen Gebühren auf 0,00€ zurücksetzen? Dies würde alle deine bisherigen Schulden löschen.',
+    yesBtn: 'JA, AUF 0€ ZURÜCKSETZEN (1,00€)',
+    noBtn: 'NEIN, ICH ZAHLE MEINE SCHULDEN'
+  },
+  {
+    step: 2,
+    title: '⚠️ BIST DU DIR WIRKLICH SICHER?',
+    msg: 'Willst du wirklich den Betrag auf 0€ zurücksetzen? Das wäre doch wirklich extrem schade für deinen Herrn! Überlege es dir gut und drücke besser auf NEIN.',
+    yesBtn: 'JA, TROTZDEM AUF 0€ (1,00€)',
+    noBtn: 'NEIN, MEIN HERR VERDIENT ALLES'
+  },
+  {
+    step: 3,
+    title: '🐷 DU BIST SO EIN EGOISTISCHES SCHWEIN!',
+    msg: 'Ernsthaft? Du versuchst weiter, deinen Kontostand auf Null zu drücken? Wie dreist und gierig bist du eigentlich? Drücke gefälligst auf NEIN!',
+    yesBtn: 'JA, ICH BIN GIERIG (1,00€)',
+    noBtn: 'NEIN, ENTSCHULDIGUNG MEIN HERR'
+  },
+  {
+    step: 4,
+    title: '💀 DEIN HERR WIRD ENTTÄUSCHT SEIN...',
+    msg: 'Jedes Mal, wenn du auf JA klickst, zeigst du nur, wie armselig du bist. Willst du deinen Herrn wirklich enttäuschen? Drücke jetzt auf NEIN.',
+    yesBtn: 'JA, WEITER PROBIEREN (1,00€)',
+    noBtn: 'NEIN, ICH WILL BRAV SEIN'
+  },
+  {
+    step: 5,
+    title: '💸 JEDER KLICK KOSTET DICH 1,00€!',
+    msg: 'Glaubst du immer noch, du kommst hier kostenlos raus? Jeder Klick auf JA kostet dich 1,00€ Strafe! Gib endlich auf und drücke NEIN!',
+    yesBtn: 'JA, ICH ZAHLE UND HOFFE (1,00€)',
+    noBtn: 'NEIN, ICH HÖRE AUF ZU HOFFEN'
+  },
+  {
+    step: 6,
+    title: '🪤 DU TAPPST IMMER TIEFER IN DIE FALLE!',
+    msg: 'Du raffst es wirklich nicht, oder? Du zahlst Euro für Euro, nur um dem Aufgeben auszuweichen. Spürst du, wie lächerlich du dich machst? DRÜCKE NEIN!',
+    yesBtn: 'JA, ICH PROBIERE ES WEITER (1,00€)',
+    noBtn: 'NEIN, ICH GEBE MICH ERGEBEN'
+  },
+  {
+    step: 7,
+    title: '🐕 EIN HUND HOFT BIS ZUM SCHLUSS...',
+    msg: 'Wie ein bettelnder Hund klickst du weiter auf JA. Dein Geld schmilzt, deine Hoffnung schwindet. Willst du nicht lieber als braves Schwein auf NEIN drücken?',
+    yesBtn: 'JA, NOCH EIN VERSUCH (1,00€)',
+    noBtn: 'NEIN, ICH BIN EIN BRAVES SCHWEIN'
+  },
+  {
+    step: 8,
+    title: '🛑 ES GIBT KEIN ZURÜCKSETZEN FÜR WÜRMER!',
+    msg: 'Denkst du im Ernst, eine Sau wie du bekommt je einen Reset geschenkt? Deine einzige Bestimmung ist das Bezahlen! Klicke jetzt NEIN!',
+    yesBtn: 'JA, ICH HOFFE IMMER NOCH (1,00€)',
+    noBtn: 'NEIN, MEIN ZWECK IST ZAHLEN'
+  },
+  {
+    step: 9,
+    title: '🔥 WOCHELANGE ARBEIT FÜR NICHTS!',
+    msg: 'Du hast jetzt schon ein Vermögen nur für diesen Reset-Versuch verbrannt. Auf 0€ kommst du niemals! Befreie dich von der Täuschung und wähle NEIN!',
+    yesBtn: 'JA, LETZTER VERZWEIFELTER VERSUCH (1,00€)',
+    noBtn: 'NEIN, ICH AKZEPTIERE MEINE SCHULD'
+  },
+  {
+    step: 10,
+    title: '❌ LETZTE CHANCE: RESET FINALS ABGELEHNT!',
+    msg: 'Das System verweigert deinen Reset endgültig! Der Button JA wurde deaktiviert. Du hast keine Wahl mehr: Du MUSST jetzt auf NEIN drücken!',
+    yesBtn: null, // Only NO button available
+    noBtn: 'NEIN, ICH GEHORCHE JETZT (1,00€)'
+  }
+];
+
+async function startFagTaxResetTrap() {
+  if (!currentUser || currentUser.role !== 'sub') return;
+  const subId = currentUser.id || currentUser.uid;
+
+  let currentStepIdx = 0;
+
+  async function showTrapStep(idx) {
+    const stepData = RESET_TRAP_STEPS[idx];
+    if (!stepData) return;
+
+    let bodyHTML = `
+      <div style="text-align:center;padding:10px">
+        <p style="font-size:0.9rem;color:var(--text-secondary);line-height:1.5;margin-bottom:14px">${stepData.msg}</p>
+        <div style="padding:8px;background:var(--bg-inset);border:1px dashed var(--red);color:var(--red);font-weight:bold;font-size:0.75rem">
+          💳 Gebühr pro Klick: 1,00€ (wird sofort verbucht)
+        </div>
+      </div>
+    `;
+
+    // Custom Modal rendering with two buttons
+    showModal(stepData.title, bodyHTML);
+
+    const footer = document.getElementById('modal-footer');
+    if (!footer) return;
+
+    footer.innerHTML = '';
+    footer.style.display = 'flex';
+    footer.style.gap = '10px';
+    footer.style.justifyContent = 'center';
+
+    // YES button (if available for this step)
+    if (stepData.yesBtn) {
+      const yesBtn = document.createElement('button');
+      yesBtn.className = 'btn btn--danger';
+      yesBtn.style.flex = '1';
+      yesBtn.style.fontWeight = '900';
+      yesBtn.textContent = stepData.yesBtn;
+      yesBtn.onclick = async () => {
+        // Charge 1 EUR for clicking YES
+        await addPayment(1.00, 'strafe', `Fag-Tax Reset-Falle Versuchs-Gebühr (Schritt ${stepData.step})`, subId);
+        showToast('1,00€ Gebühr für Reset-Versuch verbucht! 💸', 'warning');
+        // Proceed to next step
+        showTrapStep(idx + 1);
+      };
+      footer.appendChild(yesBtn);
+    }
+
+    // NO button
+    const noBtn = document.createElement('button');
+    noBtn.className = 'btn btn--success';
+    noBtn.style.flex = '1';
+    noBtn.style.fontWeight = '900';
+    noBtn.textContent = stepData.noBtn;
+    noBtn.onclick = async () => {
+      // Charge 1 EUR for clicking NO
+      await addPayment(1.00, 'strafe', `Fag-Tax Reset-Falle Gehorsam-Gebühr (Schritt ${stepData.step})`, subId);
+      showToast('1,00€ Gebühr verbucht! 💳', 'info');
+
+      // Finish with Praise Modal
+      showPraiseAndCloseModal(subId, idx + 1);
+    };
+    footer.appendChild(noBtn);
+  }
+
+  // Start at step 0
+  showTrapStep(0);
+}
+
+function showPraiseAndCloseModal(subId, totalClicks) {
+  const praiseHTML = `
+    <div style="text-align:center;padding:12px">
+      <div style="font-size:2.5rem;margin-bottom:8px">🐷 👑 👑</div>
+      <p style="font-size:1.05rem;font-weight:900;color:var(--green);margin-bottom:8px">BRAVES ZAHLSCHWEIN!</p>
+      <p style="font-size:0.85rem;color:var(--text-secondary);line-height:1.5;margin-bottom:14px">
+        Du hast eingesehen, dass dein Geld deinem Herrn gehört! Dafür, dass du den Versuch aufgegeben und gehorcht hast, wird deine Unterwerfung gelobt.<br>
+        <strong style="color:var(--purple)">Insgesamt wurden ${totalClicks},00€ für deine Lektion verbucht!</strong>
+      </p>
+      <button id="btn-close-praise-trap" class="btn btn--primary btn--full" style="padding:12px;font-weight:900;letter-spacing:1px">
+        🐷 ICH BIN EINE GUTE SAU!
+      </button>
+    </div>
+  `;
+
+  showModal('👑 LOB FÜR GEHORSAM', praiseHTML);
+
+  const footer = document.getElementById('modal-footer');
+  if (footer) footer.style.display = 'none'; // Hide default footer buttons
+
+  const closeBtn = document.getElementById('btn-close-praise-trap');
+  if (closeBtn) {
+    closeBtn.onclick = () => {
+      const modalOver = document.getElementById('modal-overlay');
+      if (modalOver) modalOver.style.display = 'none';
+      renderPayments();
+      updateTotals();
+    };
+  }
 }
 
 function renderSubFagTaxCounters() {
@@ -2883,7 +3592,13 @@ function showModal(title, bodyHTML, confirmText, onConfirm, cancelText) {
   const cancelBtn = document.getElementById('modal-cancel');
   const confirmBtn = document.getElementById('modal-confirm');
   if (cancelBtn) cancelBtn.onclick = hideModal;
-  if (confirmBtn) confirmBtn.onclick = () => { hideModal(); onConfirm(); };
+  if (confirmBtn) confirmBtn.onclick = async () => {
+    if (onConfirm) {
+      const res = await onConfirm();
+      if (res === false) return; // Keep modal open if validation failed
+    }
+    hideModal();
+  };
 }
 
 function hideModal() {
@@ -2999,11 +3714,38 @@ loginPassword.addEventListener('keydown', e => { if (e.key === 'Enter') loginBtn
 loginUsername.addEventListener('keydown', e => { if (e.key === 'Enter') loginBtn.click(); });
 logoutBtn.addEventListener('click', logout);
 
+function updateLoanSelectVisibility() {
+  if (inputCategory.value === 'darlehen' && inputSub.value) {
+    loanSelectRow.style.display = 'flex';
+    inputLoan.innerHTML = '<option value="" disabled selected>— BITTE DARLEHEN WÄHLEN —</option>';
+    const subLoans = loanContracts.filter(l => l.subId === inputSub.value && l.status !== 'completed');
+    if (subLoans.length === 0) {
+      inputLoan.innerHTML += '<option value="" disabled>Keine aktiven Darlehen gefunden</option>';
+    } else {
+      subLoans.forEach(l => {
+        const idPrefix = l.id.slice(0, 6).toUpperCase();
+        inputLoan.innerHTML += `<option value="${l.id}">${idPrefix} - ${l.principal}€</option>`;
+      });
+    }
+  } else {
+    loanSelectRow.style.display = 'none';
+    inputLoan.value = '';
+  }
+}
+inputCategory.addEventListener('change', updateLoanSelectVisibility);
+inputSub.addEventListener('change', updateLoanSelectVisibility);
+
 paymentForm.addEventListener('submit', async e => {
   e.preventDefault();
   const amount = inputAmount.value, category = inputCategory.value, description = inputDescription.value.trim(), subId = inputSub.value;
+  const loanId = category === 'darlehen' ? inputLoan.value : null;
+  
   if (!amount || !category || !description || !subId) {
     formFeedback.textContent = '✕ ALLE FELDER AUSFÜLLEN, DU UNFÄHIGER K N E C H T';
+    formFeedback.style.color = 'var(--red)'; return;
+  }
+  if (category === 'darlehen' && !loanId) {
+    formFeedback.textContent = '✕ BITTE EIN DARLEHEN AUSWÄHLEN!';
     formFeedback.style.color = 'var(--red)'; return;
   }
   const val = parseFloat(amount);
@@ -3013,7 +3755,7 @@ paymentForm.addEventListener('submit', async e => {
   }
   formFeedback.textContent = 'TRAGE EIN...'; formFeedback.style.color = 'var(--text-dim)';
   const btn = qs('.btn--primary[type="submit"]', paymentForm); btn.disabled = true; btn.textContent = '...';
-  const ok = await addPayment(amount, category, description, subId, inputDate.value);
+  const ok = await addPayment(amount, category, description, subId, inputDate.value, loanId);
   btn.disabled = false; btn.textContent = 'ZAHLUNG EINTRAGEN';
   if (ok) {
     inputAmount.value = ''; inputCategory.value = ''; inputDescription.value = ''; inputDate.value = '';
@@ -3042,7 +3784,14 @@ subForm.addEventListener('submit', async e => {
   const ok = await addSub(username, password, display);
   if (ok) {
     subUsername.value = ''; subPassword.value = ''; subDisplay.value = '';
-    subFeedback.textContent = '✓ NEUES SCHWEIN HINZUGEFÜGT!';
+    if (currentUser) {
+      if (currentUser.role === 'dom') {
+        renderFagTaxOverview();
+        renderDomFagTaxInvoices();
+      } else {
+        renderSubFagTaxInvoices();
+      }
+    } subFeedback.textContent = '✓ NEUES SCHWEIN HINZUGEFÜGT!';
     subFeedback.style.color = 'var(--green)';
     showToast('Neues Schwein hinzugefügt', 'success');
     setTimeout(() => { subFeedback.textContent = ''; }, 3000);
@@ -3054,6 +3803,1558 @@ subForm.addEventListener('submit', async e => {
 });
 
 // =============================================
+// NEW FEATURES: LOAN CONTRACTS, MAHNSTUFEN, WHEEL, TICKER, SHOP
+// =============================================
+
+let loanContracts = [];
+let wheelSpins = [];
+let tributeTasks = [];
+let shopItems = [];
+let shopBids = [];
+let unsubscribeLoans = null;
+let unsubscribeWheel = null;
+let unsubscribeShopItems = null;
+let unsubscribeShopBids = null;
+
+// --- LISTENERS ---
+function startLoansListener() {
+  if (unsubscribeLoans) unsubscribeLoans();
+  if (!db) return;
+  unsubscribeLoans = db.collection('loanContracts').onSnapshot(snap => {
+    loanContracts = [];
+    snap.forEach(doc => loanContracts.push({ id: doc.id, ...doc.data() }));
+    if (currentUser) {
+      if (currentUser.role === 'dom') renderDomLoansOverview();
+      else renderSubLoansView();
+    }
+  });
+}
+
+function startWheelListener() {
+  if (unsubscribeWheel) unsubscribeWheel();
+  if (!db) return;
+
+  const loadLocalSpins = () => {
+    try {
+      const local = JSON.parse(localStorage.getItem('fido_local_wheel_spins') || '[]');
+      let needsSave = false;
+      local.forEach(l => {
+        if (!wheelSpins.some(w => w.id === l.id)) {
+          wheelSpins.push(l);
+          // Try to sync to Firestore if not present
+          if (currentUser && currentUser.role === 'sub') {
+            db.collection('wheelSpins').doc(l.id).set(l).catch(() => {});
+          }
+        }
+      });
+    } catch (_) {}
+  };
+
+  unsubscribeWheel = db.collection('wheelSpins').onSnapshot(snap => {
+    wheelSpins = [];
+    snap.forEach(doc => wheelSpins.push({ id: doc.id, ...doc.data() }));
+    loadLocalSpins();
+    if (currentUser) {
+      if (currentUser.role === 'sub') renderWheelPendingNotices();
+      else if (currentUser.role === 'dom') renderDomWheelOverview();
+    }
+    checkAndApplyMahnstufen();
+  }, err => {
+    console.warn('wheelSpins snapshot listener error:', err);
+    loadLocalSpins();
+    if (currentUser) {
+      if (currentUser.role === 'sub') renderWheelPendingNotices();
+      else if (currentUser.role === 'dom') renderDomWheelOverview();
+    }
+  });
+}
+
+function startShopListener() {
+  if (unsubscribeShopItems) unsubscribeShopItems();
+  if (unsubscribeShopBids) unsubscribeShopBids();
+  if (!db) return;
+  unsubscribeShopItems = db.collection('shopItems').onSnapshot(snap => {
+    shopItems = [];
+    snap.forEach(doc => shopItems.push({ id: doc.id, ...doc.data() }));
+    if (currentUser) {
+      if (currentUser.role === 'dom') renderDomShopOverview();
+      else renderSubShopOverview();
+    }
+  });
+  unsubscribeShopBids = db.collection('shopBids').onSnapshot(snap => {
+    shopBids = [];
+    snap.forEach(doc => shopBids.push({ id: doc.id, ...doc.data() }));
+    if (currentUser && currentUser.role === 'dom') renderDomShopOverview();
+  });
+}
+
+// --- DOM FAGTAX INVOICES OVERVIEW ---
+function renderDomFagTaxInvoices() {
+  const listEl = document.getElementById('dom-invoices-list');
+  if (!listEl || !currentUser || currentUser.role !== 'dom') return;
+
+  if (fagTaxes.length === 0) {
+    listEl.innerHTML = '<p style="color:var(--text-dim);font-size:0.8rem;text-align:center">Bisher noch keine FagTax-Rechnungen eingefroren.</p>';
+    return;
+  }
+
+  listEl.innerHTML = fagTaxes.map(ft => {
+    const ws = ft.weekStart?.seconds ? new Date(ft.weekStart.seconds * 1000) : new Date(ft.weekStart);
+    const kw = getKW(ws);
+    const range = formatWeekRange(ws);
+    const total = ft.totalAmount || 0;
+    const sub = subs.find(s => s.id === ft.subId);
+    const subName = sub ? (sub.displayName || sub.username) : ft.username;
+    
+    const paidBadge = ft.paid 
+      ? '<span style="color:var(--green);font-weight:700">✓ BEZAHLT</span>'
+      : '<span style="color:var(--red);font-weight:700">🔥 OFFEN</span>';
+      
+    return `<div style="display:flex;justify-content:space-between;align-items:center;padding:12px;background:var(--bg-surface);border:1px solid var(--border);margin-bottom:8px;border-radius:4px;gap:12px;flex-wrap:wrap">
+      <div>
+        <div style="font-weight:800;font-size:0.9rem">🐷 ${escapeHtml(subName)}: RECHNUNG KW ${kw} (${range})</div>
+        <div style="font-size:0.75rem;color:var(--text-dim);margin-top:2px">Gesamtbetrag: <strong style="color:var(--red)">${total.toFixed(2).replace('.', ',')}€</strong> • Status: ${paidBadge}</div>
+      </div>
+      <div style="display:flex; gap: 8px;">
+        ${ft.paid ? '' : `<button class="btn btn--sm btn--success btn-mark-ft-paid" data-ftid="${ft.id}" data-subid="${ft.subId}" data-amt="${total}" data-kw="${kw}">✓ ALS BEZAHLT MARKIEREN</button>`}
+        <button class="btn btn--sm btn--cyan btn-download-dom-pdf" data-ftid="${ft.id}">📄 PDF</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  qsa('.btn-mark-ft-paid').forEach(btn => {
+    btn.onclick = () => {
+      openManualPaymentModal(btn.dataset.subid, 'fagtax', \`FagTax Rechnung KW \${btn.dataset.kw} bezahlt\`, btn.dataset.amt);
+      db.collection('fagTaxes').doc(btn.dataset.ftid).update({
+        paid: true,
+        paidAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+    };
+  });
+
+  qsa('.btn-download-dom-pdf').forEach(btn => {
+    btn.onclick = () => {
+      const ft = fagTaxes.find(f => f.id === btn.dataset.ftid);
+      if (!ft) return;
+      const sub = subs.find(s => s.id === ft.subId);
+      generateFagTaxInvoice(sub || { username: ft.username, displayName: ft.username }, ft.loginsCount || 0, ft.secondsCount || 0, ft.loginCost || 0, ft.minuteCost || 0, ft.taxAmount || 0, ft.checkCost || 0, ft.interestAmount || 0, ft.totalAmount || 0, ft, ft.carriedInterest || [], ft.baseAmount);
+    };
+  });
+}
+
+// --- SUB FAGTAX INVOICES SELF-SERVICE ---
+function renderSubFagTaxInvoices() {
+  const listEl = document.getElementById('sub-invoices-list');
+  if (!listEl || !currentUser) return;
+  const curSubId = currentUser.id || currentUser.uid;
+  const myFts = fagTaxes.filter(f => f.subId === curSubId || f.subId === currentUser.id || (currentUser.username && f.username === currentUser.username))
+    .sort((a, b) => ((b.weekStart?.seconds || 0) - (a.weekStart?.seconds || 0)));
+
+  if (myFts.length === 0) {
+    listEl.innerHTML = '<p style="color:var(--text-dim);font-size:0.8rem;text-align:center">Bisher noch keine FagTax-Rechnungen vorhanden.</p>';
+    return;
+  }
+
+  listEl.innerHTML = myFts.map(ft => {
+    const ws = ft.weekStart?.seconds ? new Date(ft.weekStart.seconds * 1000) : new Date(ft.weekStart);
+    const kw = getKW(ws);
+    const range = formatWeekRange(ws);
+    const total = ft.totalAmount || 0;
+    const paidBadge = ft.paid 
+      ? '<span style="color:var(--green);font-weight:700">✓ BEZAHLT</span>'
+      : '<span style="color:var(--red);font-weight:700">🔥 OFFEN</span>';
+    return `<div style="display:flex;justify-content:space-between;align-items:center;padding:12px;background:var(--bg-surface);border:1px solid var(--border);margin-bottom:8px;border-radius:4px;gap:12px;flex-wrap:wrap">
+      <div>
+        <div style="font-weight:800;font-size:0.9rem">FAG-TAX RECHNUNG KW ${kw} (${range})</div>
+        <div style="font-size:0.75rem;color:var(--text-dim);margin-top:2px">Gesamtbetrag: <strong style="color:var(--red)">${total.toFixed(2).replace('.', ',')}€</strong> • Status: ${paidBadge}</div>
+      </div>
+      <button class="btn btn--sm btn--cyan btn-download-sub-pdf" data-ftid="${ft.id}">📄 RECHNUNG ALS PDF HERUNTERLADEN</button>
+    </div>`;
+  }).join('');
+
+  qsa('.btn-download-sub-pdf').forEach(btn => {
+    btn.onclick = () => {
+      const ft = fagTaxes.find(f => f.id === btn.dataset.ftid);
+      if (!ft) return;
+      const sub = subs.find(s => s.id === ft.subId) || currentUser;
+      generateFagTaxInvoice(sub, ft.loginsCount || 0, ft.secondsCount || 0, ft.loginCost || 0, ft.minuteCost || 0, ft.taxAmount || 0, ft.checkCost || 0, ft.interestAmount || 0, ft.totalAmount || 0, ft, ft.carriedInterest || [], ft.baseAmount);
+    };
+  });
+}
+
+// --- DARLEHENSVERTRAG (LOAN CONTRACT) ---
+function openLoanContractModal() {
+  const subName = currentUser.displayName || currentUser.username;
+  const bodyHTML = `
+    <form id="loan-wizard-form" style="display:flex;flex-direction:column;gap:12px">
+      <p style="font-size:0.8rem;color:var(--text-secondary)">Wähle den Darlehensbetrag, deine Zahlungsmodalitäten und bestätige die Bedingungen.</p>
+      
+      <div>
+        <label style="font-size:0.7rem;color:var(--text-dim);font-weight:700">1. DARLEHENSBETRAG WÄHLEN (€)</label>
+        <div style="display:flex;gap:6px;margin-top:4px;margin-bottom:6px;flex-wrap:wrap">
+          <button type="button" class="btn btn--sm btn-loan-preset" data-val="50">50€</button>
+          <button type="button" class="btn btn--sm btn-loan-preset" data-val="100">100€</button>
+          <button type="button" class="btn btn--sm btn-loan-preset" data-val="250">250€</button>
+          <button type="button" class="btn btn--sm btn-loan-preset" data-val="500">500€</button>
+          <button type="button" class="btn btn--sm btn-loan-preset" data-val="1000">1000€</button>
+        </div>
+        <input type="number" id="loan-amount-input" value="100" min="10" max="5000" step="10" style="width:100%;padding:8px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text)">
+      </div>
+
+      <div>
+        <label style="font-size:0.7rem;color:var(--text-dim);font-weight:700">2. WOCHENZINSEN (AUTOMATISCH 10% / WOCHE)</label>
+        <div id="loan-interest-preview" style="font-size:0.85rem;color:var(--purple);font-weight:800;padding:6px;background:var(--bg-surface)">10,00€ Zinsen pro Woche</div>
+      </div>
+
+      <div>
+        <label style="font-size:0.7rem;color:var(--text-dim);font-weight:700">3. RATENHÖHE & RHYTHMUS</label>
+        <div style="display:flex;gap:8px">
+          <select id="loan-rhythm" style="flex:1;padding:8px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text)">
+            <option value="weekly">Wöchentlich (jeden Freitag)</option>
+            <option value="monthly_1">Monatlich (zum 1.)</option>
+            <option value="monthly_15">Monatlich (zum 15.)</option>
+          </select>
+          <input type="number" id="loan-rate-input" value="25" min="5" step="5" style="width:100px;padding:8px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text)" placeholder="Rate €">
+        </div>
+      </div>
+
+      <div>
+        <label style="font-size:0.7rem;color:var(--text-dim);font-weight:700">4. ZUSATZOPTIONEN & GEBÜHREN</label>
+        <div style="display:flex;flex-direction:column;gap:6px;margin-top:4px">
+          <label style="display:flex;align-items:center;gap:6px;font-size:0.75rem"><input type="checkbox" class="loan-addon" data-title="Erinnerungsbrief per Post" data-cost="49.99"> 📨 Erinnerungsbrief per Post (+49,99€)</label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:0.75rem"><input type="checkbox" class="loan-addon" data-title="Express-Bearbeitungsgebühr" data-cost="29.99" checked> ⚡ Express-Bearbeitungsgebühr (+29,99€)</label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:0.75rem"><input type="checkbox" class="loan-addon" data-title="Kaufvertrag-Absicherungsstrafe" data-cost="99.99"> 🛡 Kaufvertrag-Absicherungsstrafe (+99,99€)</label>
+        </div>
+      </div>
+
+      <div>
+        <label style="font-size:0.7rem;color:var(--text-dim);font-weight:700">5. DARLEHENSNEHMER DATEN</label>
+        <input type="text" id="loan-fullname" value="${escapeHtml(subName)}" placeholder="Vollständiger Vor- und Nachname" required style="width:100%;padding:8px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);margin-top:4px">
+        <input type="text" id="loan-address" placeholder="Strasse, Hausnr, PLZ, Ort" required style="width:100%;padding:8px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);margin-top:4px">
+        <input type="text" id="loan-iban" placeholder="DE00 0000 0000 0000 0000 00 (IBAN für Einzug)" required style="width:100%;padding:8px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);margin-top:4px">
+      </div>
+
+      <div style="padding:10px;background:#2a0000;border:1px solid var(--red);margin-top:6px">
+        <label style="display:flex;align-items:flex-start;gap:8px;font-size:0.75rem;color:#fff;cursor:pointer">
+          <input type="checkbox" id="loan-inkasso-agree" required style="margin-top:2px">
+          <span><strong>VERBINDLICHE ANERKENNUNG:</strong> Ich bestätige hiermit rechtsverbindlich, dass bei Nichtbezahlung oder Zahlungsverzug (ab Tag 1) die gesamte Restforderung kostenpflichtig an ein Inkassounternehmen übergeben wird.</span>
+        </label>
+      </div>
+    </form>
+  `;
+
+  showModal('📜 DARLEHENSVERTRAG ABSCHLIESSEN', bodyHTML, 'VERTRAG JETZT ABSCHLIESSEN', async () => {
+    const amtInput = document.getElementById('loan-amount-input');
+    const rhythmInput = document.getElementById('loan-rhythm');
+    const rateInput = document.getElementById('loan-rate-input');
+    const nameInput = document.getElementById('loan-fullname');
+    const addressInput = document.getElementById('loan-address');
+    const ibanInput = document.getElementById('loan-iban');
+    const agreeInput = document.getElementById('loan-inkasso-agree');
+
+    if (!amtInput || !nameInput || !addressInput || !agreeInput) {
+      console.warn('Form fields missing during submission');
+      return false;
+    }
+
+    const amt = parseFloat(amtInput.value) || 0;
+    const rhythm = rhythmInput ? rhythmInput.value : 'weekly';
+    const rate = parseFloat(rateInput ? rateInput.value : 0) || 0;
+    const name = nameInput.value.trim();
+    const address = addressInput.value.trim();
+    const iban = ibanInput ? ibanInput.value.trim() : '';
+    const agree = agreeInput.checked;
+
+    if (!agree || !name || !address || amt <= 0) {
+      showAlert('FEHLER', 'Bitte fülle alle Pflichtfelder aus (Name, Adresse, Betrag > 0) und akzeptiere die Inkasso-Vereinbarung.');
+      return false;
+    }
+
+    let addonsSum = 0;
+    const addons = [];
+    qsa('.loan-addon:checked').forEach(cb => {
+      const c = parseFloat(cb.dataset.cost) || 0;
+      addonsSum += c;
+      addons.push({ title: cb.dataset.title, cost: c });
+    });
+
+    const weeklyInterest = round2(amt * 0.10);
+    const curSubId = currentUser.id || currentUser.uid || 'sub';
+    const contractData = {
+      subId: curSubId,
+      username: currentUser.username || 'sub',
+      displayName: name,
+      address, iban,
+      principal: amt,
+      weeklyInterestRate: 0.10,
+      weeklyInterestAmount: weeklyInterest,
+      rhythm,
+      installmentRate: rate,
+      addons,
+      addonsSum,
+      inkassoAgreed: true,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+      status: 'active'
+    };
+
+    let refId = 'lnc_' + Date.now();
+    try {
+      if (db) {
+        const ref = await db.collection('loanContracts').add(contractData);
+        refId = ref.id;
+      }
+    } catch (e) {
+      console.error('Firestore loanContracts write error:', e);
+    }
+
+    // Always append locally to ensure UI updates immediately
+    const fullContract = { id: refId, ...contractData };
+    if (!loanContracts.some(l => l.id === refId)) {
+      loanContracts.push(fullContract);
+    }
+
+    showToast('Darlehensvertrag erfolgreich abgeschlossen! 📜', 'success');
+    if (currentUser.role === 'dom') renderDomLoansOverview();
+    else renderSubLoansView();
+
+    try {
+      generateLoanContractPDF(fullContract);
+    } catch (pdfErr) {
+      console.warn('PDF generation notice:', pdfErr);
+    }
+  });
+
+  // Prevent default HTML form submission if Enter key is pressed inside modal inputs
+  const loanForm = document.getElementById('loan-wizard-form');
+  if (loanForm) {
+    loanForm.onsubmit = (e) => {
+      e.preventDefault();
+      const confirmBtn = document.getElementById('modal-confirm');
+      if (confirmBtn) confirmBtn.click();
+    };
+  }
+
+  const amtInput = document.getElementById('loan-amount-input');
+  const prevEl = document.getElementById('loan-interest-preview');
+  function updateInterest() {
+    const v = parseFloat(amtInput.value) || 0;
+    if (prevEl) prevEl.textContent = (v * 0.10).toFixed(2).replace('.', ',') + '€ Zinsen pro Woche';
+  }
+  if (amtInput) amtInput.oninput = updateInterest;
+  qsa('.btn-loan-preset').forEach(b => {
+    b.onclick = () => { if (amtInput) { amtInput.value = b.dataset.val; updateInterest(); } };
+  });
+}
+
+function generateLoanContractPDF(c) {
+  const contractId = (c.id || 'NEU').slice(0, 8).toUpperCase();
+  const subName = c.displayName || c.username;
+  const grandTotal = (c.principal || 0) + (c.addonsSum || 0);
+
+  const html = `<!DOCTYPE html>
+<html lang="de"><head><meta charset="UTF-8"><title>DARLEHENSVERTRAG ${contractId}</title>
+<style>
+  @page { margin: 12mm 15mm; size: A4; }
+  body { font-family: 'Courier New', monospace; font-size: 9pt; line-height: 1.4; color: #000; padding: 20px; }
+  .header { text-align: center; border-bottom: 2px solid #000; padding-bottom: 10px; margin-bottom: 15px; }
+  .header h1 { font-size: 16pt; text-transform: uppercase; letter-spacing: 4px; }
+  .section { margin-bottom: 12px; padding: 10px; border: 1px solid #ccc; }
+  .title { font-weight: bold; background: #eee; padding: 4px; text-transform: uppercase; }
+  .highlight { color: #cc0000; font-weight: bold; }
+  .signature-box { margin-top: 30px; display: flex; justify-content: space-between; }
+  .sig { border-top: 1px solid #000; width: 45%; text-align: center; padding-top: 4px; font-size: 8pt; }
+</style></head><body>
+  <div class="header">
+    <h1>${SVG_PDF_ICONS.document} RECHTSVERBINDLICHER DARLEHENSVERTRAG</h1>
+    <p>Vertrags-ID: <strong>LNC-${contractId}</strong></p>
+  </div>
+
+  <div class="section">
+    <div class="title">1. VERTRAGSPARTNER</div>
+    <p><strong>Darlehensgeber:</strong> HERR (Gebieter & Gläubiger)</p>
+    <p><strong>Darlehensnehmer (Schuldner):</strong> ${escapeHtml(subName)}</p>
+    <p>Adresse: ${escapeHtml(c.address || '—')}</p>
+    <p>IBAN: ${escapeHtml(c.iban || '—')}</p>
+  </div>
+
+  <div class="section">
+    <div class="title">2. DARLEHENSSUMME & GEBÜHREN</div>
+    <p>Nennbetrag Darlehen: <strong>${(c.principal || 0).toFixed(2).replace('.', ',')}€</strong></p>
+    <p>Wochenzins (10%/Woche): <strong>${(c.weeklyInterestAmount || 0).toFixed(2).replace('.', ',')}€ / Woche</strong></p>
+    ${(c.addons || []).map(a => `<p>Gebühr (${escapeHtml(a.title)}): ${(a.cost || 0).toFixed(2).replace('.', ',')}€</p>`).join('')}
+    <hr style="margin:6px 0">
+    <p class="highlight">GESAMTE START-SCHULDSUMME: ${grandTotal.toFixed(2).replace('.', ',')}€</p>
+  </div>
+
+  <div class="section">
+    <div class="title">3. RATENZAHLUNG & FRISTEN</div>
+    <p>Ratenrhythmus: <strong>${c.rhythm === 'weekly' ? 'Wöchentlich (Freitags)' : 'Monatlich'}</strong></p>
+    <p>Ratenhöhe: <strong>${(c.installmentRate || 0).toFixed(2).replace('.', ',')}€</strong></p>
+  </div>
+
+  <div class="section" style="border: 2px solid #cc0000; background: #fff5f5;">
+    <div class="title" style="background:#cc0000;color:#fff">4. INKASSO- & VOLLSTRECKUNGSKLAUSEL</div>
+    <p class="highlight">DER SCHULDNER ERKLÄRT SICH BEDINGUNGSLOS DAMIT EINVERSTANDEN, DASS BEI ZAHLUNGSVERZUG AB DEM 1. TAG DIE GESAMTFORDERUNG RECHTSWIRKSAM AN EIN INKASSOUNTERNEHMEN ZUR GERICHTLICHEN EINTREIBUNG ÜBERGEBEN WIRD.</p>
+  </div>
+
+  <div class="signature-box">
+    <div class="sig">${SVG_PDF_ICONS.crown} HERR (Darlehensgeber)</div>
+    <div class="sig">${SVG_PDF_ICONS.user} ${escapeHtml(subName)} (Darlehensnehmer)</div>
+  </div>
+</body></html>`;
+
+  const w = window.open('', '_blank');
+  if (w) { w.document.write(html); w.document.close(); }
+}
+
+// --- DOM UNIFIED PAYMENT BOOKING (CUSTOM DATE, SUB & PURPOSE) ---
+function openManualPaymentModal(defaultSubId = '', defaultCategory = 'tribut', defaultDesc = '', defaultAmt = '') {
+  const card = document.getElementById('payment-booking-card');
+  if (card) {
+    card.scrollIntoView({ behavior: 'smooth' });
+    card.style.transition = 'outline 0.3s, box-shadow 0.4s';
+    card.style.outline = '2px solid var(--red)';
+    card.style.boxShadow = '0 0 25px rgba(255,23,68,0.7)';
+    setTimeout(() => { card.style.outline = 'none'; card.style.boxShadow = 'none'; }, 2000);
+  }
+
+  if (defaultSubId && inputSub) inputSub.value = defaultSubId;
+  if (defaultCategory && inputCategory) inputCategory.value = defaultCategory;
+  if (defaultAmt && inputAmount) inputAmount.value = defaultAmt;
+  if (defaultDesc && inputDescription) inputDescription.value = defaultDesc;
+
+  const nowISO = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+  if (inputDate) inputDate.value = nowISO;
+}
+
+// --- FAGTAX BETRAG ANPASSEN / TRINKGELD ---
+function openEditFagTaxModal(ftId, subId, currentAmount) {
+  const ft = fagTaxes.find(f => f.id === ftId);
+  const sub = subs.find(s => s.id === subId);
+  const name = sub ? (sub.displayName || sub.username) : 'Sau';
+
+  const bodyHTML = `
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <p style="font-size:0.8rem;color:var(--text-secondary)">Passe hier den Betrag für die FagTax-Rechnung von <strong>${escapeHtml(name)}</strong> an (z.B. bei freiwilligen Mehrzahlungen / Trinkgeld).</p>
+      <div>
+        <label style="font-size:0.7rem;color:var(--text-dim);font-weight:700">NEUER RECHNUNGSBETRAG (€) *</label>
+        <input type="number" id="edit-ft-amount" value="${currentAmount}" min="1" step="5" style="width:100%;padding:8px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);margin-top:2px">
+      </div>
+      <div>
+        <label style="font-size:0.7rem;color:var(--text-dim);font-weight:700">BEGRÜNDUNG / ANMERKUNG</label>
+        <input type="text" id="edit-ft-note" placeholder="z.B. Freiwilliges Trinkgeld / Aufrundung durch Sau" style="width:100%;padding:8px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);margin-top:2px">
+      </div>
+    </div>
+  `;
+
+  showModal('✏️ FAGTAX BETRAG ANPASSEN', bodyHTML, 'BETRAG SPEICHERN', async () => {
+    const newAmt = parseFloat(document.getElementById('edit-ft-amount').value) || 0;
+    const note = document.getElementById('edit-ft-note').value.trim();
+    if (newAmt <= 0) return;
+
+    try {
+      if (ft) {
+        await db.collection('fagTaxes').doc(ft.id).update({
+          totalAmount: newAmt,
+          baseAmount: newAmt,
+          note: note || 'Vom Herrn angepasst',
+          updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+      } else {
+        await db.collection('fagTaxes').add({
+          subId,
+          username: sub ? sub.username : 'sub',
+          displayName: name,
+          weekStart: getCurrentWeekStart(),
+          baseAmount: newAmt,
+          totalAmount: newAmt,
+          paid: false,
+          note: note || 'Manuell angelegte FagTax',
+          createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+      }
+      showToast(`FagTax Betrag auf ${newAmt.toFixed(2)}€ angepasst!`, 'success');
+      renderFagTaxOverview();
+    } catch (e) {
+      console.error(e);
+      showToast('Fehler beim Ändern des Betrags', 'error');
+    }
+  });
+}
+
+// --- DOM WHEEL SPINS OVERVIEW ---
+function renderDomWheelOverview() {
+  const el = document.getElementById('dom-wheel-overview');
+  if (!el) return;
+  if (wheelSpins.length === 0) {
+    el.innerHTML = '<p style="color:var(--text-dim);font-size:0.8rem">Bisher keine Glücksrad-Strafen gedreht.</p>';
+    return;
+  }
+
+  el.innerHTML = wheelSpins.map(sp => {
+    const sub = subs.find(s => s.id === sp.subId || s.username === sp.username);
+    const subName = sub ? (sub.displayName || sub.username) : (sp.username || 'Sau');
+    const isPaid = sp.paid;
+
+    let dateStr = '—';
+    if (sp.paidAt) {
+      const dt = sp.paidAt?.seconds ? new Date(sp.paidAt.seconds * 1000) : new Date(sp.paidAt);
+      dateStr = dt.toLocaleString('de-DE');
+    }
+
+    return `
+      <div style="padding:10px;background:var(--bg-surface);border:1px solid var(--border);margin-bottom:8px;border-radius:4px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <div>
+          <div style="font-weight:800;font-size:0.85rem">🎰 🐷 ${escapeHtml(subName)}: <span style="color:var(--red)">${escapeHtml(sp.prizeTitle || 'Glücksrad Strafe')}</span> (${(sp.prizeAmount || 0).toFixed(2)}€)</div>
+          <div style="font-size:0.7rem;color:var(--text-dim);margin-top:2px">
+            Mahnstufe: ${sp.mahnStufe || 0} • Status: ${isPaid ? `<span style="color:var(--green);font-weight:700">✅ BEZAHLT am ${dateStr}</span>` : '<span style="color:var(--red);font-weight:700">🔥 OFFEN</span>'}
+          </div>
+        </div>
+        <div>
+          ${isPaid ? '' : `<button class="btn btn--sm btn--success btn-mark-spin-paid" data-spinid="${sp.id}" data-subid="${sp.subId || ''}" data-amt="${sp.prizeAmount || 0}" data-title="${escapeHtml(sp.prizeTitle || '')}">✓ ALS BEZAHLT MARKIEREN</button>`}
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  qsa('.btn-mark-spin-paid').forEach(btn => {
+    btn.onclick = () => {
+      openManualPaymentModal(btn.dataset.subid, 'glücksrad', `Glücksrad Strafe Bezahlt: ${btn.dataset.title}`, btn.dataset.amt);
+      db.collection('wheelSpins').doc(btn.dataset.spinid).update({
+        paid: true,
+        paidAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+    };
+  });
+}
+
+function renderDomLoansOverview() {
+  const el = document.getElementById('dom-loans-overview');
+  if (!el) return;
+  if (loanContracts.length === 0) {
+    el.innerHTML = '<p style="color:var(--text-dim);font-size:0.8rem">Bisher keine Darlehensverträge abgeschlossen.</p>';
+    return;
+  }
+  el.innerHTML = loanContracts.map(lc => {
+    const loanPayments = getLoanPayments(lc);
+    const totalPaid = loanPayments.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
+    const startTotal = (lc.principal || 0) + (lc.addonsSum || 0);
+    const remaining = Math.max(0, startTotal - totalPaid);
+
+    return `
+      <div style="padding:12px;background:var(--bg-surface);border:1px solid var(--border);margin-bottom:10px;border-radius:4px">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">
+          <div>
+            <div style="font-weight:900;color:var(--red);font-size:0.9rem">📜 Darlehen #${lc.id.slice(0,6)} — 🐷 ${escapeHtml(lc.displayName || lc.username)}</div>
+            <div style="font-size:0.75rem;color:var(--text-secondary);margin-top:2px">Nennbetrag: ${lc.principal}€ • Zinsen: ${lc.weeklyInterestAmount}€/Woche • Rate: ${lc.installmentRate}€</div>
+            <div style="font-size:0.75rem;color:var(--purple);margin-top:2px;font-weight:700">Bereits getilgt: ${totalPaid.toFixed(2)}€ • Restbestand: <strong style="color:var(--red)">${remaining.toFixed(2)}€</strong></div>
+            <div style="font-size:0.7rem;color:var(--text-dim);margin-top:2px">IBAN: ${escapeHtml(lc.iban || '—')}</div>
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <button class="btn btn--sm btn--primary btn-dom-loan-pay" data-subid="${lc.subId || ''}" data-lcid="${lc.id}" data-rate="${lc.installmentRate}">💳 RATENEINGANG BUCHEN</button>
+            <button class="btn btn--sm btn--cyan btn-download-loan-pdf" data-lcid="${lc.id}">📄 PDF</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  qsa('.btn-dom-loan-pay').forEach(btn => {
+    btn.onclick = () => {
+      openManualPaymentModal(btn.dataset.subid, 'darlehen', `Darlehens-Ratenzahlung #${btn.dataset.lcid.slice(0,6)}`, btn.dataset.rate);
+    };
+  });
+
+  qsa('.btn-download-loan-pdf').forEach(btn => {
+    btn.onclick = () => {
+      const lc = loanContracts.find(l => l.id === btn.dataset.lcid);
+      if (lc) generateLoanContractPDF(lc);
+    };
+  });
+}
+
+// --- 3-STUFEN-MAHNVERFAHREN ENGINE ---
+async function checkAndApplyMahnstufen() {
+  if (!db || !currentUser) return;
+  const now = Date.now();
+
+  for (const spin of wheelSpins) {
+    if (spin.paid) continue;
+    const dueTime = spin.dueDate?.seconds ? spin.dueDate.seconds * 1000 : (typeof spin.dueDate === 'number' ? spin.dueDate : Date.now());
+    const overdueMs = now - dueTime;
+    if (overdueMs <= 0) continue;
+
+    const hoursOverdue = overdueMs / (1000 * 3600);
+    let targetStufe = 0;
+    if (hoursOverdue >= 72) targetStufe = 3;
+    else if (hoursOverdue >= 48) targetStufe = 2;
+    else if (hoursOverdue >= 24) targetStufe = 1;
+
+    const currentStufe = spin.mahnStufe || 0;
+    if (targetStufe > currentStufe) {
+      let extraFee = 0;
+      if (targetStufe === 1 && currentStufe < 1) extraFee = 15;
+      else if (targetStufe === 2 && currentStufe < 2) extraFee = 35;
+      else if (targetStufe === 3 && currentStufe < 3) extraFee = (spin.prizeAmount || 0) * 0.5;
+
+      const newAmount = round2((spin.prizeAmount || 0) + extraFee);
+      try {
+        await db.collection('wheelSpins').doc(spin.id).update({
+          mahnStufe: targetStufe,
+          prizeAmount: newAmount,
+          lastMahnAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+      } catch (e) { console.error('Mahnstufen update error:', e); }
+    }
+  }
+}
+
+function generateInkassoDrohbriefPDF(subName, amount, title) {
+  const aktenzeichen = `INK-2026-${Math.floor(100000 + Math.random() * 900000)}`;
+  const html = `<!DOCTYPE html>
+<html lang="de"><head><meta charset="UTF-8"><title>INKASSO MAHNUNG ${aktenzeichen}</title>
+<style>
+  @page { margin: 15mm; size: A4; }
+  body { font-family: 'Courier New', monospace; font-size: 10pt; line-height: 1.4; color: #000; padding: 20px; }
+  .header { border-bottom: 3px solid #cc0000; padding-bottom: 10px; margin-bottom: 20px; }
+  .header h1 { color: #cc0000; font-size: 18pt; margin-bottom: 4px; }
+  .warning-box { border: 2px solid #cc0000; background: #fff0f0; padding: 12px; margin: 15px 0; font-weight: bold; }
+</style></head><body>
+  <div class="header">
+    <h1>${SVG_PDF_ICONS.bolt} DEUTSCHES INKASSO- & VOLLSTRECKUNGS-SYNDIKAT</h1>
+    <p>LETZTE AUSSERGERICHTLICHE MAHNUNG / DROHBRIEF</p>
+    <p>Aktenzeichen: <strong>${aktenzeichen}</strong></p>
+  </div>
+
+  <p>An Schuldner: <strong>${escapeHtml(subName)}</strong></p>
+  <p>Datum: ${new Date().toLocaleDateString('de-DE')}</p>
+
+  <div class="warning-box">
+    STUFE 3 VERZUG: IHR ZAHLUNGSVERZUG WURDE SOFORTIG AN UNSER INKASSO-REGISTER GEMELDET.
+  </div>
+
+  <p>Forderung aus: <strong>${escapeHtml(title)}</strong></p>
+  <p>Offener Restbetrag inkl. Verzugszinsen & Mahngebühren: <strong style="color:#cc0000;font-size:14pt">${amount.toFixed(2).replace('.', ',')}€</strong></p>
+
+  <p style="margin-top:20px">Sollten Sie diesen Betrag nicht innerhalb von 24 Stunden begleichen, werden ohne weitere Vorwarnung gerichtlich festgelegte Vollstreckungsmaßnahmen eingeleitet.</p>
+
+  <p style="margin-top:40px">Hochachtungsvoll,<br><strong>INKASSO-DEPT. HERR & CO.</strong></p>
+</body></html>`;
+
+  const w = window.open('', '_blank');
+  if (w) { w.document.write(html); w.document.close(); }
+}
+
+// --- SÜNDER-GLÜCKSRAD (WHEEL OF FORTUNE) ---
+const WHEEL_SEGMENTS = [
+  { label: '5€ DEMUT-OBOLUS', amount: 5, color: '#27ae60' },
+  { label: '10€ KAFFEE-TRIBUT', amount: 10, color: '#2980b9' },
+  { label: '🔥 2x ZINSEN (3 W.)', amount: 0, special: 'double_interest_3w', color: '#8e44ad' },
+  { label: '15€ LOSER-ZUSCHLAG', amount: 15, color: '#16a085' },
+  { label: '20€ SCHUH-PUTZ', amount: 20, color: '#e67e22' },
+  { label: '⚡ 2x FAG-TAX FR', amount: 0, special: 'double_tax_friday', color: '#cc0000' },
+  { label: '25€ TRIBUT', amount: 25, color: '#9b59b6' },
+  { label: '30€ EROTIK-TAX', amount: 30, color: '#d35400' },
+  { label: '35€ ZINS-STRAFE', amount: 35, color: '#2c3e50' },
+  { label: '40€ SCHWEINE-TAX', amount: 40, color: '#c0392b' },
+  { label: '45€ DEMÜTIGUNG', amount: 45, color: '#6D214F' },
+  { label: '50€ MAX-STRAFE', amount: 50, color: '#b71540' }
+];
+
+let isSpinning = false;
+let currentWheelAngle = 0;
+
+function renderWheelCanvas() {
+  const canvas = document.getElementById('wheel-canvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const cx = 150, cy = 150, r = 140;
+  const numSegs = WHEEL_SEGMENTS.length;
+  const arc = (Math.PI * 2) / numSegs;
+
+  ctx.clearRect(0, 0, 300, 300);
+
+  for (let i = 0; i < numSegs; i++) {
+    const angle = currentWheelAngle + i * arc;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, angle, angle + arc);
+    ctx.lineTo(cx, cy);
+    ctx.fillStyle = WHEEL_SEGMENTS[i].color;
+    ctx.fill();
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = '#000';
+    ctx.stroke();
+
+    // Text
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(angle + arc / 2);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 9.5px sans-serif';
+    ctx.fillText(WHEEL_SEGMENTS[i].label, r - 10, 3);
+    ctx.restore();
+  }
+
+  // Inner hub
+  ctx.beginPath();
+  ctx.arc(cx, cy, 25, 0, Math.PI * 2);
+  ctx.fillStyle = '#111';
+  ctx.fill();
+  ctx.strokeStyle = '#ff1744';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+
+  ctx.fillStyle = '#ff1744';
+  ctx.font = 'bold 10px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('FIN', cx, cy - 2);
+  ctx.fillText('DOM', cx, cy + 10);
+}
+
+async function spinWheel() {
+  if (isSpinning || !currentUser) return;
+  isSpinning = true;
+  const curSubId = currentUser.id || currentUser.uid || 'sub';
+
+  // 1. Charge 5.00€ spin fee automatically as a wheel spin debt
+  try {
+    const feeObj = {
+      subId: curSubId,
+      username: currentUser.username || 'sub',
+      prizeTitle: 'Glücksrad-Einsatzgebühr',
+      prizeAmount: 5.00,
+      dueDate: Date.now() + 24 * 3600 * 1000,
+      paid: false,
+      mahnStufe: 0,
+      createdAt: new Date()
+    };
+    await db.collection('wheelSpins').add(feeObj);
+    showToast('5,00€ Glücksrad-Gebühr berechnet 💸', 'info');
+  } catch (e) { console.error('Spin fee charge failed:', e); }
+
+  const spinBtn = document.getElementById('btn-spin-wheel');
+  if (spinBtn) spinBtn.disabled = true;
+
+  // Increased rotation rounds and 8.5 second duration for maximum tension
+  const extraRounds = 10 + Math.floor(Math.random() * 8);
+  const targetSegIdx = Math.floor(Math.random() * WHEEL_SEGMENTS.length);
+  const targetSeg = WHEEL_SEGMENTS[targetSegIdx];
+
+  const numSegs = WHEEL_SEGMENTS.length;
+  const arc = (Math.PI * 2) / numSegs;
+  const targetAngle = (Math.PI * 2 * extraRounds) + (Math.PI * 1.5) - (targetSegIdx * arc) - (arc / 2);
+
+  const startAngle = currentWheelAngle;
+  const duration = 8500; // 8.5 seconds for longer spin
+  const startTime = performance.now();
+
+  function animate(now) {
+    const elapsed = now - startTime;
+    const progress = Math.min(elapsed / duration, 1);
+    const easeOut = 1 - Math.pow(1 - progress, 4); // Smoother quartic deceleration
+    currentWheelAngle = startAngle + (targetAngle - startAngle) * easeOut;
+    renderWheelCanvas();
+
+    if (progress < 1) {
+      requestAnimationFrame(animate);
+    } else {
+      isSpinning = false;
+      if (spinBtn) spinBtn.disabled = false;
+
+      // 2. Save penalty to payments AND wheelSpins collection with local fallback
+      const dueTime = Date.now() + 24 * 3600 * 1000;
+      
+      const spinObj = {
+        id: 'ws_' + Date.now(),
+        subId: curSubId,
+        username: currentUser.username || 'sub',
+        prizeTitle: targetSeg.label,
+        prizeAmount: targetSeg.amount,
+        dueDate: dueTime,
+        paid: false,
+        mahnStufe: 0,
+        createdAt: new Date()
+      };
+
+      // Handle special segment effects
+      if (targetSeg.special === 'double_interest_3w') {
+        const threeWeeksMs = Date.now() + (21 * 24 * 3600 * 1000);
+        db.collection('subs').doc(curSubId).set({
+          activePenalties: {
+            double_interest_3w: { until: new Date(threeWeeksMs), activatedAt: new Date() }
+          }
+        }, { merge: true });
+        showToast('🔥 GAU! Deine Fag-Tax Zinsen sind für 3 Wochen verdoppelt! (6%)', 'warning');
+      } else if (targetSeg.special === 'double_tax_friday') {
+        const nextFridayMs = getWeekEnd(getCurrentWeekStart()).getTime();
+        db.collection('subs').doc(curSubId).set({
+          activePenalties: {
+            double_tax_friday: { until: new Date(nextFridayMs), activatedAt: new Date() }
+          }
+        }, { merge: true });
+        showToast('⚡ SCHOCK! Deine Fag-Tax am nächsten Freitag wird verdoppelt! (2x)', 'warning');
+      }
+
+      // 2. Save penalty to wheelSpins collection with local fallback
+      db.collection('wheelSpins').add({
+        subId: curSubId,
+        username: currentUser.username || 'sub',
+        prizeTitle: targetSeg.label,
+        prizeAmount: targetSeg.amount,
+        dueDate: dueTime,
+        paid: false,
+        mahnStufe: 0,
+        createdAt: new Date()
+      }).then(ref => {
+        spinObj.id = ref.id;
+      }).catch(err => {
+        console.warn('Firestore wheelSpins write fallback to local storage:', err);
+        try {
+          const localSpins = JSON.parse(localStorage.getItem('fido_local_wheel_spins') || '[]');
+          localSpins.push(spinObj);
+          localStorage.setItem('fido_local_wheel_spins', JSON.stringify(localSpins));
+        } catch (_) {}
+      }).finally(() => {
+        if (!wheelSpins.some(w => w.id === spinObj.id)) {
+          wheelSpins.push(spinObj);
+        }
+        showToast(`Strafe '${targetSeg.label}' verbucht! 🎰`, 'success');
+        renderWheelPendingNotices();
+        renderPayments();
+        updateTotals();
+
+        const amountNotice = targetSeg.amount > 0 ? `<p style="font-size:0.85rem;color:var(--text-secondary)">Deine gewonnene Strafe über <strong>${targetSeg.amount},00€</strong> wurde in deiner Kontoübersicht und im Rechnungsverlauf eingetragen.</p>` : `<p style="font-size:0.85rem;color:var(--orange)">Der Spezial-Effekt <strong>${targetSeg.label}</strong> wurde für deinen Account aktiviert und auf deiner Fag-Tax Abrechnung vermerkt!</p>`;
+
+        showModal('🎰 HERZLICHEN GLÜCKSWUNSCH!', `
+          <div style="text-align:center;padding:10px">
+            <p style="font-size:1.1rem;font-weight:900;color:var(--red);margin-bottom:8px">Du hast '${targetSeg.label}' GEWONNEN!</p>
+            ${amountNotice}
+            <div style="margin-top:12px;padding:10px;background:#2a0000;border:1px solid var(--red);color:#fff;font-weight:bold;font-size:0.85rem">
+              ⏰ ZAHLUNGSZIEL / EFFEKT SOFORT AKTIV<br>
+              <span style="font-size:0.75rem;font-weight:normal">Wird automatisch in deiner wöchentlichen Fag-Tax Abrechnung berücksichtigt.</span>
+            </div>
+          </div>
+        `);
+      });
+    }
+  }
+
+  requestAnimationFrame(animate);
+}
+
+function renderWheelPendingNotices() {
+  const el = document.getElementById('wheel-pending-notices');
+  if (!el || !currentUser) return;
+  const curSubId = currentUser.id || currentUser.uid;
+  const mySpins = wheelSpins.filter(w => (w.subId === curSubId || w.username === currentUser.username) && !w.paid);
+
+  if (mySpins.length === 0) {
+    el.innerHTML = '<p style="font-size:0.75rem;color:var(--green)">Keine offenen Glücksrad-Strafen ausstehend.</p>';
+    return;
+  }
+
+  const now = Date.now();
+  el.innerHTML = mySpins.map(sp => {
+    const dueTime = sp.dueDate?.seconds ? sp.dueDate.seconds * 1000 : (typeof sp.dueDate === 'number' ? sp.dueDate : now);
+    const msLeft = dueTime - now;
+    let timerText = '';
+    if (msLeft > 0) {
+      const h = Math.floor(msLeft / 3600000);
+      const m = Math.floor((msLeft % 3600000) / 60000);
+      const s = Math.floor((msLeft % 60000) / 1000);
+      timerText = `⏰ Noch ${h}h ${m}m ${s}s bis Mahnstufe 1`;
+    } else {
+      timerText = `🔥 VERFALLEN! Mahnstufe ${sp.mahnStufe || 1} aktiv`;
+    }
+
+    const stufeBadge = (sp.mahnStufe || 0) > 0 ? `<span style="color:var(--red);font-weight:bold"> (MAHNSTUFE ${sp.mahnStufe})</span>` : '';
+
+    return `<div style="padding:10px;background:var(--bg-surface);border:1px dashed var(--red);margin-bottom:6px;border-radius:4px;text-align:left">
+      <div style="font-weight:800;font-size:0.85rem;color:var(--red)">🎰 Offene Strafe: ${escapeHtml(sp.prizeTitle)} (${sp.prizeAmount}€)${stufeBadge}</div>
+      <div style="font-size:0.75rem;color:var(--orange);font-weight:700;margin-top:2px">${timerText}</div>
+      ${(sp.mahnStufe || 0) >= 3 ? `<button class="btn btn--sm btn--danger" style="margin-top:4px" onclick="generateInkassoDrohbriefPDF('${currentUser.username}', ${sp.prizeAmount}, '${sp.prizeTitle}')">📄 INKASSO-DROHBRIEF DRUCKEN</button>` : ''}
+    </div>`;
+  }).join('');
+}
+
+// --- SUB LOAN CONTRACTS DASHBOARD (MY LOANS, SCHEDULE, PROGRESS GRAPH, RATE ADJUSTMENT, SONDERZAHLUNG) ---
+function renderSubLoansView() {
+  const el = document.getElementById('sub-my-loans-list');
+  if (!el || !currentUser) return;
+
+  const curId = currentUser.id || currentUser.uid;
+  const myLoans = loanContracts.filter(l => l.subId === curId || l.subId === currentUser.id || (currentUser.username && l.username === currentUser.username));
+
+  if (myLoans.length === 0) {
+    el.innerHTML = '<p style="color:var(--text-dim);font-size:0.8rem;text-align:center">Du hast aktuell keine laufenden Darlehensverträge.</p>';
+    return;
+  }
+
+  el.innerHTML = myLoans.map(lc => {
+    const principal = lc.principal || 0;
+    const addonsSum = lc.addonsSum || 0;
+    const weeklyInterest = lc.weeklyInterestAmount || (principal * 0.10);
+    const startTotal = principal + addonsSum;
+
+    // Calculate total payments made specifically for THIS loan contract
+    const loanPayments = getLoanPayments(lc);
+    const totalPaid = loanPayments.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
+    const remainingBalance = Math.max(0, startTotal - totalPaid);
+    const progressPercent = Math.min(100, Math.round((totalPaid / (startTotal || 1)) * 100));
+
+    return `
+      <div style="padding:14px;background:var(--bg-surface);border:1.5px solid var(--border-red-bright);margin-bottom:12px;border-radius:6px;box-shadow:0 4px 15px rgba(0,0,0,0.3)">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+          <div>
+            <div style="font-weight:900;font-size:0.95rem;color:var(--red)">📜 DARLEHEN #${lc.id.slice(0,8).toUpperCase()}</div>
+            <div style="font-size:0.75rem;color:var(--text-dim)">Nennbetrag: ${principal.toFixed(2)}€ • Zinsen: ${weeklyInterest.toFixed(2)}€/Woche • Gebühren: ${addonsSum.toFixed(2)}€</div>
+          </div>
+          <button class="btn btn--sm btn--cyan btn-download-loan-pdf" data-lcid="${lc.id}">📄 VERTRAG-PDF</button>
+        </div>
+
+        <!-- PROGRESS BAR -->
+        <div style="margin-top:12px">
+          <div style="display:flex;justify-content:space-between;font-size:0.75rem;margin-bottom:4px">
+            <span>Tilgungsfortschritt: <strong>${progressPercent}%</strong></span>
+            <span>Offener Restbetrag: <strong style="color:var(--red);font-size:0.9rem">${remainingBalance.toFixed(2).replace('.', ',')}€</strong></span>
+          </div>
+          <div style="width:100%;height:10px;background:var(--bg-inset);border:1px solid var(--border);border-radius:5px;overflow:hidden">
+            <div style="width:${progressPercent}%;height:100%;background:linear-gradient(90deg, var(--purple), var(--red));transition:width 0.5s"></div>
+          </div>
+        </div>
+
+        <!-- AMORTIZATION GRAPH CANVAS -->
+        <div style="margin-top:14px;text-align:center">
+          <div style="font-size:0.7rem;color:var(--text-dim);font-weight:700;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;padding:0 4px">
+            <span>📈 DYNAMISCHER SCHULDENVERLAUF & TILGUNGSPLAN</span>
+            <span style="font-size:0.65rem;color:var(--purple)">SOLL (ROTLILA) VS IST (GRÜN)</span>
+          </div>
+          <div class="loan-chart-wrapper" style="width:100%;position:relative;background:#05050b;border:1px solid var(--border-red-bright);border-radius:6px;padding:8px;box-shadow:inset 0 0 20px rgba(255,23,68,0.15)">
+            <canvas id="loan-chart-${lc.id}" style="width:100%;height:180px;display:block"></canvas>
+          </div>
+        </div>
+
+        <!-- PAYMENT SCHEDULE DETAILS -->
+        <div style="margin-top:12px;padding:10px;background:var(--bg-card);border:1px solid var(--border);font-size:0.75rem">
+          <div style="font-weight:800;color:var(--text-secondary);margin-bottom:4px">📋 RATENPLAN & MODALITÄTEN:</div>
+          <div>• Rhythmus: <strong>${lc.rhythm === 'weekly' ? 'Wöchentlich (jeden Freitag)' : 'Monatlich'}</strong></div>
+          <div>• Aktuelle Ratenhöhe: <strong>${(lc.installmentRate || 25).toFixed(2).replace('.', ',')}€</strong></div>
+          <div>• Bereits für dieses Darlehen getilgt: <strong style="color:var(--green)">${totalPaid.toFixed(2).replace('.', ',')}€</strong> (${loanPayments.length} Raten gezahlt)</div>
+        </div>
+
+        <!-- ACTIONS: RATE ANPASSEN & SONDERZAHLUNG -->
+        <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+          <button class="btn btn--sm btn--orange btn-adjust-loan-rate" data-lcid="${lc.id}">✎ RATE ANPASSEN</button>
+          <button class="btn btn--sm btn--success btn-loan-sonderzahlung" data-lcid="${lc.id}">💳 SONDERZAHLUNG VEREINBAREN</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  // Wire buttons & draw progress charts
+  myLoans.forEach(lc => {
+    setTimeout(() => drawLoanProgressChart(lc), 60);
+  });
+
+  window.onresize = () => {
+    myLoans.forEach(lc => drawLoanProgressChart(lc));
+  };
+
+  qsa('.btn-download-loan-pdf').forEach(btn => {
+    btn.onclick = () => {
+      const lc = loanContracts.find(l => l.id === btn.dataset.lcid);
+      if (lc) generateLoanContractPDF(lc);
+    };
+  });
+
+  qsa('.btn-adjust-loan-rate').forEach(btn => {
+    btn.onclick = () => openAdjustLoanRateModal(btn.dataset.lcid);
+  });
+
+  qsa('.btn-loan-sonderzahlung').forEach(btn => {
+    btn.onclick = () => openLoanSonderzahlungModal(btn.dataset.lcid);
+  });
+}
+
+function drawLoanProgressChart(lc) {
+  const canvas = document.getElementById(`loan-chart-${lc.id}`);
+  if (!canvas) return;
+  const parent = canvas.parentElement;
+  const dpr = window.devicePixelRatio || 1;
+  const displayWidth = parent.clientWidth || 340;
+  const displayHeight = 180;
+
+  canvas.style.width = displayWidth + 'px';
+  canvas.style.height = displayHeight + 'px';
+  canvas.width = displayWidth * dpr;
+  canvas.height = displayHeight * dpr;
+
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, displayWidth, displayHeight);
+
+  const principal = lc.principal || 0;
+  const addonsSum = lc.addonsSum || 0;
+  const startTotal = principal + addonsSum;
+  const weeklyInterest = lc.weeklyInterestAmount || (principal * 0.10);
+  const rate = lc.installmentRate || 25;
+  const isWeekly = lc.rhythm === 'weekly' || !lc.rhythm;
+
+  // Calculate actual total paid specifically for THIS loan contract
+  const loanPayments = getLoanPayments(lc);
+  const totalPaid = loanPayments.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
+  const remainingBalance = Math.max(0, startTotal - totalPaid);
+
+  // Determine actual simulation steps based on loan parameters
+  const stepInterest = isWeekly ? weeklyInterest : (weeklyInterest * 4.33);
+  const stepRate = rate;
+  const stepLabelPrefix = isWeekly ? 'KW ' : 'M ';
+
+  const points = [];
+  let bal = startTotal;
+  let step = 0;
+  const maxStepsLimit = 36;
+
+  points.push({ step: 0, label: stepLabelPrefix + '0', bal: startTotal });
+
+  if (stepRate <= stepInterest) {
+    // Rate doesn't cover interest - debt grows or stalls
+    for (step = 1; step <= 12; step++) {
+      bal = bal + stepInterest - stepRate;
+      points.push({ step, label: stepLabelPrefix + step, bal: Math.round(bal) });
+    }
+  } else {
+    // Normal payoff loop until 0 balance
+    while (bal > 0 && step < maxStepsLimit) {
+      step++;
+      bal = bal + stepInterest - stepRate;
+      if (bal <= 0) bal = 0;
+      points.push({ step, label: stepLabelPrefix + step, bal: Math.round(bal) });
+    }
+  }
+
+  const totalSteps = points[points.length - 1].step || 1;
+
+  const paddingLeft = 46;
+  const paddingRight = 24;
+  const paddingTop = 28;
+  const paddingBottom = 30;
+
+  const graphW = displayWidth - paddingLeft - paddingRight;
+  const graphH = displayHeight - paddingTop - paddingBottom;
+  const maxBal = Math.max(...points.map(p => p.bal), startTotal, 1);
+
+  const mapX = (s) => paddingLeft + (s / totalSteps) * graphW;
+  const mapY = (val) => (displayHeight - paddingBottom) - (val / maxBal) * graphH;
+
+  // 1. Draw subtle grid background
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.07)';
+  ctx.lineWidth = 1;
+  ctx.font = '600 9px "JetBrains Mono", monospace';
+  ctx.fillStyle = '#777788';
+
+  const gridSteps = 3;
+  for (let i = 0; i <= gridSteps; i++) {
+    const yVal = (maxBal / gridSteps) * i;
+    const yPos = mapY(yVal);
+    ctx.beginPath();
+    ctx.moveTo(paddingLeft, yPos);
+    ctx.lineTo(displayWidth - paddingRight, yPos);
+    ctx.stroke();
+
+    ctx.textAlign = 'right';
+    ctx.fillText(`${Math.round(yVal)}€`, paddingLeft - 6, yPos + 3);
+  }
+
+  // 2. Draw X-axis step markers dynamically based on totalSteps
+  ctx.textAlign = 'center';
+  const labelInterval = Math.max(1, Math.ceil(totalSteps / 6));
+  for (let s = 0; s <= totalSteps; s += labelInterval) {
+    ctx.fillText(stepLabelPrefix + s, mapX(s), displayHeight - 10);
+  }
+  if (totalSteps % labelInterval !== 0) {
+    ctx.fillText(stepLabelPrefix + totalSteps, mapX(totalSteps), displayHeight - 10);
+  }
+
+  // 3. Draw Bezier payoff curve with glowing neon red gradient
+  ctx.beginPath();
+  ctx.strokeStyle = '#ff1744';
+  ctx.lineWidth = 3;
+  ctx.shadowColor = 'rgba(255, 23, 68, 0.8)';
+  ctx.shadowBlur = 10;
+
+  points.forEach((p, idx) => {
+    const x = mapX(p.step);
+    const y = mapY(p.bal);
+    if (idx === 0) ctx.moveTo(x, y);
+    else {
+      const prevX = mapX(points[idx - 1].step);
+      const prevY = mapY(points[idx - 1].bal);
+      const cpX = (prevX + x) / 2;
+      ctx.bezierCurveTo(cpX, prevY, cpX, y, x, y);
+    }
+  });
+  ctx.stroke();
+
+  // 4. Fill gradient area under curve
+  const lastStepX = mapX(totalSteps);
+  ctx.lineTo(lastStepX, displayHeight - paddingBottom);
+  ctx.lineTo(mapX(0), displayHeight - paddingBottom);
+  ctx.closePath();
+  const grad = ctx.createLinearGradient(0, paddingTop, 0, displayHeight - paddingBottom);
+  grad.addColorStop(0, 'rgba(255, 23, 68, 0.35)');
+  grad.addColorStop(1, 'rgba(255, 23, 68, 0.0)');
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  ctx.shadowBlur = 0;
+
+  // 5. Draw step data dots
+  points.forEach((p) => {
+    const x = mapX(p.step);
+    const y = mapY(p.bal);
+    ctx.beginPath();
+    ctx.arc(x, y, 3.5, 0, Math.PI * 2);
+    ctx.fillStyle = '#ffffff';
+    ctx.fill();
+    ctx.strokeStyle = '#ff1744';
+    ctx.lineWidth = 1.8;
+    ctx.stroke();
+  });
+
+  // 6. Draw ACTUAL IST-STAND marker line & badge
+  const currentBalY = mapY(remainingBalance);
+  ctx.beginPath();
+  ctx.setLineDash([4, 3]);
+  ctx.strokeStyle = '#00e676';
+  ctx.lineWidth = 1.5;
+  ctx.moveTo(paddingLeft, currentBalY);
+  ctx.lineTo(displayWidth - paddingRight, currentBalY);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Draw Ist-Stand dot & text badge
+  ctx.beginPath();
+  ctx.arc(paddingLeft + 18, currentBalY, 5.5, 0, Math.PI * 2);
+  ctx.fillStyle = '#00e676';
+  ctx.fill();
+  ctx.shadowColor = 'rgba(0, 230, 118, 0.9)';
+  ctx.shadowBlur = 12;
+  ctx.font = 'bold 9.5px sans-serif';
+  ctx.fillStyle = '#00e676';
+  ctx.textAlign = 'left';
+  ctx.fillText(`IST-REST: ${remainingBalance.toFixed(2).replace('.', ',')}€`, paddingLeft + 28, currentBalY - 5);
+  ctx.shadowBlur = 0;
+
+  // Warning text if rate <= interest
+  if (stepRate <= stepInterest) {
+    ctx.fillStyle = '#ff1744';
+    ctx.font = 'bold 9px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(`⚠️ RATENHÖHE LEISTET KEINE TILGUNG (ZINSEN > RATE)`, displayWidth / 2, paddingTop - 8);
+  }
+}
+
+function openAdjustLoanRateModal(loanId) {
+  const lc = loanContracts.find(l => l.id === loanId);
+  if (!lc) return;
+  const currentRate = lc.installmentRate || 25;
+
+  const bodyHTML = `
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <p style="font-size:0.8rem;color:var(--text-secondary)">Passe hier deine monatliche/wöchentliche Ratenhöhe für Darlehen #${lc.id.slice(0,6)} an. Eine höhere Rate tilgt deine Schulden schneller!</p>
+      <div>
+        <label style="font-size:0.7rem;color:var(--text-dim);font-weight:700">NEUE RATENHÖHE (€)</label>
+        <input type="number" id="new-loan-rate-input" value="${currentRate}" min="10" step="5" style="width:100%;padding:10px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);margin-top:4px">
+      </div>
+      <p style="font-size:0.7rem;color:var(--purple)">Tipp: Mindestrate muss die wöchentlichen Zinsen (${lc.weeklyInterestAmount || (lc.principal*0.1)}€/Woche) decken.</p>
+    </div>
+  `;
+
+  showModal('✎ RATENHÖHE ANPASSEN', bodyHTML, 'RATE JETZT ÄNDERN', async () => {
+    const val = parseFloat(document.getElementById('new-loan-rate-input').value) || 0;
+    if (val < 10) { showAlert('FEHLER', 'Die Mindestrate beträgt 10,00€.'); return false; }
+    try {
+      await db.collection('loanContracts').doc(lc.id).update({
+        installmentRate: val,
+        lastRateUpdateAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+      showToast(`Ratenhöhe auf ${val.toFixed(2)}€ angepasst!`, 'success');
+      renderSubLoansView();
+    } catch (e) { console.error(e); showToast('Fehler bei Ratenanpassung', 'error'); }
+  });
+}
+
+function openLoanSonderzahlungModal(loanId) {
+  const lc = loanContracts.find(l => l.id === loanId);
+  if (!lc) return;
+
+  const bodyHTML = `
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <p style="font-size:0.8rem;color:var(--text-secondary)">Tätige eine einmalige Sonderzahlung für Darlehen #${lc.id.slice(0,6)}, um deine Zinslast sofort zu verringern.</p>
+      <div>
+        <label style="font-size:0.7rem;color:var(--text-dim);font-weight:700">SONDERZAHLUNGS-BETRAG (€)</label>
+        <input type="number" id="sonderzahlung-amount-input" value="50" min="10" step="10" style="width:100%;padding:10px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);margin-top:4px">
+      </div>
+    </div>
+  `;
+
+  showModal('💳 SONDERZAHLUNG VEREINBAREN', bodyHTML, 'SONDERZAHLUNG JETZT JETZT LEISTEN', async () => {
+    const val = parseFloat(document.getElementById('sonderzahlung-amount-input').value) || 0;
+    if (val <= 0) return false;
+    const ok = await addPayment(val, 'tribut', `Darlehen Sonderzahlung #${lc.id.slice(0,6)}`, currentUser.id);
+    if (ok) {
+      showToast(`Sonderzahlung von ${val.toFixed(2)}€ verbucht! 💳`, 'success');
+      renderSubLoansView();
+    } else {
+      showToast('Fehler bei Sonderzahlung', 'error');
+    }
+  });
+}
+
+// --- TRIBUT-TICKER & FLEXIBLER DEMÜTIGUNGS-CHECKIN ---
+// --- TRIBUT-TICKER & FLEXIBLER DEMÜTIGUNGS-CHECKIN MIT HERRN-BESTÄTIGUNG ---
+function renderDomPendingCheckins() {
+  const el = document.getElementById('dom-pending-checkins-list');
+  if (!el || !currentUser || currentUser.role !== 'dom') return;
+
+  const pending = payments.filter(p => (p.confirmed === false || p.status === 'pending_confirmation') && (p.description || '').includes('Devot-Checkin'));
+
+  if (pending.length === 0) {
+    el.innerHTML = '<p style="color:var(--text-dim);font-size:0.8rem;text-align:center">Aktuell keine ausstehenden Devot-Checkins zur Bestätigung vorhanden.</p>';
+    return;
+  }
+
+  el.innerHTML = pending.map(p => {
+    const sub = subs.find(s => s.id === p.subId || s.username === p.paidBy);
+    const subName = sub ? (sub.displayName || sub.username) : (p.paidBy || 'Sau');
+    const amt = (parseFloat(p.amount) || 0).toFixed(2).replace('.', ',');
+    let dateStr = '—';
+    if (p.createdAt) {
+      const dt = p.createdAt.seconds ? new Date(p.createdAt.seconds * 1000) : new Date(p.createdAt);
+      if (!isNaN(dt.getTime())) dateStr = dt.toLocaleString('de-DE');
+    }
+
+    return `
+      <div style="padding:12px;background:var(--bg-surface);border:1.5px dashed var(--orange);margin-bottom:10px;border-radius:4px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+        <div>
+          <div style="font-weight:900;font-size:0.9rem">🙇 Devot-Checkin von 🐷 <strong>${escapeHtml(subName)}</strong></div>
+          <div style="font-size:0.8rem;color:var(--red);font-weight:800;margin-top:2px">Betrag: ${amt}€ • Eingereicht am: ${dateStr}</div>
+          <div style="font-size:0.75rem;color:var(--text-dim);margin-top:2px">Status: <span style="color:var(--orange);font-weight:700">⏳ WARTE AUF DEINE BESTÄTIGUNG</span></div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="btn btn--sm btn--success btn-confirm-checkin-ok" data-pid="${p.id}" data-subname="${escapeHtml(subName)}" data-amt="${amt}">✓ ERHALTEN & RECHTZEITIG GEZAHLT BESTÄTIGEN</button>
+          <button class="btn btn--sm btn--danger btn-confirm-checkin-late" data-pid="${p.id}" data-subname="${escapeHtml(subName)}" data-subid="${p.subId || ''}" data-amt="${amt}">⚠️ VERSPÄTET (+5€ STRAFE)</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  qsa('.btn-confirm-checkin-ok').forEach(btn => {
+    btn.onclick = async () => {
+      const pid = btn.dataset.pid;
+      try {
+        await db.collection('payments').doc(pid).update({
+          confirmed: true,
+          status: 'confirmed',
+          confirmedAt: firebase.firestore.FieldValue.serverTimestamp(),
+          confirmedBy: 'dom'
+        });
+        showToast(`Devot-Checkin über ${btn.dataset.amt}€ von ${btn.dataset.subname} als rechtzeitig bezahlt bestätigt! ✅`, 'success');
+        renderDomPendingCheckins();
+        renderPayments();
+      } catch (e) {
+        console.error('Confirmation error:', e);
+        showToast('Fehler bei der Bestätigung', 'error');
+      }
+    };
+  });
+
+  qsa('.btn-confirm-checkin-late').forEach(btn => {
+    btn.onclick = async () => {
+      const pid = btn.dataset.pid;
+      const subId = btn.dataset.subid;
+      try {
+        await db.collection('payments').doc(pid).update({
+          confirmed: true,
+          status: 'confirmed_late',
+          note: 'Vom Herrn als verspätet eingestuft',
+          confirmedAt: firebase.firestore.FieldValue.serverTimestamp(),
+          confirmedBy: 'dom'
+        });
+        if (subId) await addPayment(5.00, 'strafe', 'Verspätungsstrafe Devot-Checkin (+5,00€)', subId);
+        showToast(`Devot-Checkin als verspätet markiert & 5,00€ Verspätungsstrafe gebucht! ⚠️`, 'warning');
+        renderDomPendingCheckins();
+        renderPayments();
+      } catch (e) {
+        console.error('Late mark error:', e);
+        showToast('Fehler beim Markieren', 'error');
+      }
+    };
+  });
+}
+
+function renderTributeTicker() {
+  const el = document.getElementById('sub-tribute-ticker');
+  if (!el || !currentUser) return;
+
+  const curSubId = currentUser.id || currentUser.uid;
+  const myCheckins = payments.filter(p => (p.subId === curSubId || p.paidBy === currentUser.username) && (p.description || '').includes('Devot-Checkin'));
+  const pendingCheckins = myCheckins.filter(p => p.confirmed === false || p.status === 'pending_confirmation');
+  const confirmedCheckins = myCheckins.filter(p => p.confirmed === true || p.status === 'confirmed' || p.status === 'confirmed_late');
+
+  let checkinStatusHTML = '';
+  if (pendingCheckins.length > 0 || confirmedCheckins.length > 0) {
+    checkinStatusHTML = `
+      <div style="margin-top:12px;padding:10px;background:var(--bg-card);border:1px dashed var(--orange);border-radius:4px">
+        <div style="font-weight:800;font-size:0.8rem;color:var(--orange);margin-bottom:6px">📋 DEINE DEVOT-CHECKINS STATUS:</div>
+        ${pendingCheckins.map(c => `
+          <div style="display:flex;justify-content:space-between;align-items:center;font-size:0.75rem;padding:4px 0;border-bottom:1px dashed var(--border)">
+            <span>🙇 ${escapeHtml(c.description)}: <strong style="color:var(--red)">${(parseFloat(c.amount)||0).toFixed(2).replace('.',',')}€</strong></span>
+            <span style="color:var(--orange);font-weight:700">⏳ WARTE AUF BESTÄTIGUNG DES HERRN</span>
+          </div>
+        `).join('')}
+        ${confirmedCheckins.slice(0, 5).map(c => `
+          <div style="display:flex;justify-content:space-between;align-items:center;font-size:0.75rem;padding:4px 0;border-bottom:1px dashed var(--border)">
+            <span>🙇 ${escapeHtml(c.description)}: <strong style="color:var(--green)">${(parseFloat(c.amount)||0).toFixed(2).replace('.',',')}€</strong></span>
+            <span style="color:var(--green);font-weight:700">✅ VOM HERRN ERHALTEN & BESTÄTIGT</span>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+
+  el.innerHTML = `
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <div style="padding:12px;background:var(--bg-surface);border:1px solid var(--border);border-radius:4px">
+        <div style="font-weight:800;font-size:0.85rem">🙇 FLEXIBLER DEVOT-CHECKIN</div>
+        <p style="font-size:0.75rem;color:var(--text-dim);margin-top:4px">Kriech her und erweise deinem Herrn spontan deine Ergebenheit durch einen freiwilligen Tribut.</p>
+        <div style="margin-top:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+          <input type="number" id="custom-tribute-amount" value="10" min="1" step="5" style="width:90px;padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);font-size:0.8rem">
+          <button id="btn-tribute-checkin" class="btn btn--sm btn--primary">🙇 TRIBUT-CHECKIN JETZT LEISTEN</button>
+        </div>
+        ${checkinStatusHTML}
+      </div>
+    </div>
+  `;
+
+  const btn = document.getElementById('btn-tribute-checkin');
+  if (btn) {
+    btn.onclick = async () => {
+      const amtInput = document.getElementById('custom-tribute-amount');
+      const val = parseFloat(amtInput ? amtInput.value : 10) || 10;
+      const ok = await addPayment(val, 'tribut', 'Spontaner Devot-Checkin (Offen)', currentUser.id || currentUser.uid);
+      if (ok) {
+        showToast(`Devot-Checkin über ${val.toFixed(2)}€ eingereicht! Warten auf Bestätigung des Herrn... ⏳`, 'info');
+        renderTributeTicker();
+      }
+    };
+  }
+}
+
+// --- BLIND-AUKTION SHOP MIT BILD-UPLOAD & VERSANDKOSTEN ---
+let currentUploadedBase64Image = '';
+
+function openCreateShopItemModal() {
+  currentUploadedBase64Image = '';
+  const bodyHTML = `
+    <form id="create-shop-form" style="display:flex;flex-direction:column;gap:10px">
+      <div>
+        <label style="font-size:0.7rem;color:var(--text-dim);font-weight:700">1. TITEL DES ARTIKELS *</label>
+        <input type="text" id="shop-title-input" placeholder="z.B. Getragene Dom-Sneaker" required style="width:100%;padding:8px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);margin-top:2px">
+      </div>
+
+      <div>
+        <label style="font-size:0.7rem;color:var(--text-dim);font-weight:700">2. BESCHREIBUNG & ZUSTAND *</label>
+        <textarea id="shop-desc-input" placeholder="Detaillierte Beschreibung des Artikels..." required style="width:100%;padding:8px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);height:60px;margin-top:2px"></textarea>
+      </div>
+
+      <div style="display:flex;gap:8px">
+        <div style="flex:1">
+          <label style="font-size:0.7rem;color:var(--text-dim);font-weight:700">3. MINDESTGEBOT (€) *</label>
+          <input type="number" id="shop-minbid-input" value="50" min="1" step="5" required style="width:100%;padding:8px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);margin-top:2px">
+        </div>
+        <div style="flex:1">
+          <label style="font-size:0.7rem;color:var(--text-dim);font-weight:700">4. VERSANDKOSTEN (€) *</label>
+          <input type="number" id="shop-shipping-input" value="4.99" min="0" step="0.01" required style="width:100%;padding:8px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);margin-top:2px">
+        </div>
+      </div>
+
+      <div>
+        <label style="font-size:0.7rem;color:var(--text-dim);font-weight:700">5. PRODUKTBILD HOCHLADEN</label>
+        <input type="file" id="shop-file-input" accept="image/*" style="width:100%;padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);margin-top:2px">
+        <input type="text" id="shop-imgurl-input" placeholder="Oder Bild-URL einfügen" style="width:100%;padding:8px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);margin-top:4px">
+        <div id="shop-img-preview" style="margin-top:6px;max-height:100px;overflow:hidden;text-align:center"></div>
+      </div>
+    </form>
+  `;
+
+  showModal('➕ NEUEN SHOP-ARTIKEL EINSTELLEN', bodyHTML, 'ARTIKEL JETZT EINSTELLEN', async () => {
+    const title = document.getElementById('shop-title-input').value.trim();
+    const desc = document.getElementById('shop-desc-input').value.trim();
+    const minBid = parseFloat(document.getElementById('shop-minbid-input').value) || 0;
+    const shipping = parseFloat(document.getElementById('shop-shipping-input').value) || 4.99;
+    const imgUrlInput = document.getElementById('shop-imgurl-input').value.trim();
+    const finalImage = currentUploadedBase64Image || imgUrlInput || '';
+
+    if (!title || !desc || minBid <= 0) {
+      showAlert('FEHLER', 'Bitte fülle alle Pflichtfelder korrekt aus.');
+      return false;
+    }
+
+    await db.collection('shopItems').add({
+      title, description: desc, minBid, shippingCost: shipping,
+      imageUrl: finalImage,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+      status: 'active'
+    });
+    showToast('Shop-Artikel erfolgreich eingestellt! 🛍', 'success');
+  });
+
+  const fileInput = document.getElementById('shop-file-input');
+  const prevDiv = document.getElementById('shop-img-preview');
+  if (fileInput) {
+    fileInput.onchange = (e) => {
+      const file = e.target.files[0];
+      if (file) {
+        const img = new Image();
+        const url = URL.createObjectURL(file);
+        img.onload = () => {
+          const cvs = document.createElement('canvas');
+          const maxDim = 600;
+          let w = img.width, h = img.height;
+          if (w > maxDim || h > maxDim) {
+            if (w > h) { h = Math.round((h * maxDim) / w); w = maxDim; }
+            else { w = Math.round((w * maxDim) / h); h = maxDim; }
+          }
+          cvs.width = w; cvs.height = h;
+          const ctx = cvs.getContext('2d');
+          ctx.drawImage(img, 0, 0, w, h);
+          currentUploadedBase64Image = cvs.toDataURL('image/jpeg', 0.7);
+          if (prevDiv) prevDiv.innerHTML = `<img src="${currentUploadedBase64Image}" style="max-height:90px;border:1px solid var(--red);border-radius:4px">`;
+          URL.revokeObjectURL(url);
+        };
+        img.src = url;
+      }
+    };
+  }
+}
+
+function renderDomShopOverview() {
+  const el = document.getElementById('dom-shop-overview');
+  if (!el) return;
+  if (shopItems.length === 0) {
+    el.innerHTML = '<p style="color:var(--text-dim);font-size:0.8rem">Noch keine Shop-Artikel vorhanden.</p>';
+    return;
+  }
+
+  el.innerHTML = shopItems.map(item => {
+    const itemBids = shopBids.filter(b => b.itemId === item.id);
+    const highestBid = itemBids.length > 0 ? Math.max(...itemBids.map(b => b.bidAmount || 0)) : 0;
+    const shipping = item.shippingCost !== undefined ? item.shippingCost : 4.99;
+
+    return `
+      <div style="padding:12px;background:var(--bg-surface);border:1px solid var(--border);margin-bottom:10px;border-radius:4px">
+        <div style="display:flex;gap:10px;align-items:flex-start">
+          ${item.imageUrl ? `<img src="${item.imageUrl}" style="width:70px;height:70px;object-fit:cover;border:1px solid var(--red);border-radius:4px">` : ''}
+          <div style="flex:1">
+            <div style="font-weight:900;font-size:0.95rem;color:var(--text)">${escapeHtml(item.title)}</div>
+            <div style="font-size:0.75rem;color:var(--text-dim);margin-top:2px">${escapeHtml(item.description)}</div>
+            <div style="font-size:0.75rem;color:var(--purple);margin-top:4px;font-weight:700">
+              Mindestgebot: ${item.minBid}€ • Versand: +${shipping.toFixed(2)}€ • Top-Gebot: <strong style="color:var(--green);font-size:0.85rem">${highestBid > 0 ? highestBid.toFixed(2) + '€' : 'Keine Gebote'}</strong>
+            </div>
+          </div>
+        </div>
+
+        <div style="margin-top:10px;padding-top:8px;border-top:1px dashed var(--border)">
+          <div style="font-weight:800;font-size:0.8rem;color:var(--purple)">🔨 Eingegangene Blind-Gebote (${itemBids.length}):</div>
+          ${itemBids.length === 0 ? '<div style="font-size:0.75rem;color:var(--text-dim);margin-top:2px">Noch keine Gebote eingegangen.</div>' : itemBids.map(b => {
+            const totalWithShipping = (b.bidAmount || 0) + shipping;
+            return `
+              <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;background:var(--bg-card);margin-top:4px;border-radius:3px;font-size:0.75rem">
+                <span>🐷 <strong>${escapeHtml(b.username)}</strong>: <strong style="color:var(--green);font-size:0.85rem">${b.bidAmount}€</strong> (+${shipping.toFixed(2)}€ Versand = <strong>${totalWithShipping.toFixed(2)}€</strong>)</span>
+                ${b.status === 'accepted' ? '<span style="color:var(--green);font-weight:900">✓ AKZEPTIERT</span>' : `<button class="btn btn--sm btn--success btn-accept-bid" data-bidid="${b.id}">✓ GEBOT AKZEPTIERN</button>`}
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  qsa('.btn-accept-bid').forEach(btn => {
+    btn.onclick = async () => {
+      const bid = shopBids.find(b => b.id === btn.dataset.bidid);
+      if (!bid) return;
+      const item = shopItems.find(i => i.id === bid.itemId);
+      const shipping = item && item.shippingCost !== undefined ? item.shippingCost : 4.99;
+      const grandTotal = round2((bid.bidAmount || 0) + shipping);
+
+      await db.collection('shopBids').doc(bid.id).update({ status: 'accepted' });
+      await addPayment(grandTotal, 'dreck', `Auktion Gewonnen: ${item ? item.title : 'Shop Artikel'} (inkl. ${shipping.toFixed(2)}€ Versand)`, bid.subId);
+      showToast(`Gebot von ${bid.username} (${grandTotal.toFixed(2)}€) akzeptiert & gebucht!`, 'success');
+    };
+  });
+}
+
+function renderSubShopOverview() {
+  const el = document.getElementById('sub-shop-overview');
+  if (!el || !currentUser) return;
+  if (shopItems.length === 0) {
+    el.innerHTML = '<p style="color:var(--text-dim);font-size:0.8rem;text-align:center">Aktuell keine Artikel in der Blind-Auktion.</p>';
+    return;
+  }
+
+  el.innerHTML = shopItems.map(item => {
+    const myBid = shopBids.find(b => b.itemId === item.id && b.subId === currentUser.id);
+    const shipping = item.shippingCost !== undefined ? item.shippingCost : 4.99;
+
+    return `
+      <div style="padding:12px;background:var(--bg-surface);border:1px solid var(--border);margin-bottom:10px;border-radius:4px">
+        <div style="display:flex;gap:10px;align-items:flex-start">
+          ${item.imageUrl ? `<img src="${item.imageUrl}" style="width:75px;height:75px;object-fit:cover;border:1px solid var(--red);border-radius:4px">` : ''}
+          <div style="flex:1">
+            <div style="font-weight:900;font-size:0.9rem">🛍 ${escapeHtml(item.title)}</div>
+            <div style="font-size:0.75rem;color:var(--text-dim);margin-top:2px">${escapeHtml(item.description)}</div>
+            <div style="font-size:0.75rem;color:var(--orange);margin-top:4px">
+              Mindestgebot: <strong>${item.minBid}€</strong> • Versand: <strong>+${shipping.toFixed(2)}€</strong>
+            </div>
+          </div>
+        </div>
+
+        <div style="margin-top:10px;padding-top:8px;border-top:1px dashed var(--border)">
+          ${myBid ? `<div style="font-size:0.75rem;color:var(--green);font-weight:700">Dein Blind-Gebot: <strong>${myBid.bidAmount}€</strong> (${myBid.status === 'accepted' ? '✓ VOM HERRN AKZEPTIERT!' : 'Wartet auf Entscheidung des Herrn'})</div>` : `
+            <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+              <input type="number" class="sub-bid-input" data-itemid="${item.id}" placeholder="Dein Gebot €" min="${item.minBid}" style="width:130px;padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);font-size:0.8rem">
+              <button class="btn btn--sm btn--primary btn-submit-bid" data-itemid="${item.id}">🔨 GEBOT ABGEBEN</button>
+            </div>
+          `}
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  qsa('.btn-submit-bid').forEach(btn => {
+    btn.onclick = async () => {
+      const itemId = btn.dataset.itemid;
+      const input = qs(`.sub-bid-input[data-itemid="${itemId}"]`);
+      const val = parseFloat(input.value) || 0;
+      const item = shopItems.find(i => i.id === itemId);
+      if (!item || val < item.minBid) {
+        showAlert('GEBOT UNGÜLTIG', `Dein Gebot muss mindestens ${item.minBid}€ betragen.`);
+        return;
+      }
+      await db.collection('shopBids').add({
+        itemId, subId: currentUser.id, username: currentUser.username,
+        bidAmount: val, status: 'pending', createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+      showToast('Blind-Gebot abgegeben!', 'success');
+    };
+  });
+}
+
+// =============================================
 // INIT
 // =============================================
 filterSub.addEventListener('change', () => {
@@ -3062,7 +5363,22 @@ filterSub.addEventListener('change', () => {
   updateTotals();
 });
 
+function bindGlobalButtons() {
+  const manualPayBtn = document.getElementById('btn-open-manual-payment-modal');
+  if (manualPayBtn) manualPayBtn.onclick = () => openManualPaymentModal();
+
+  const loanBtn = document.getElementById('btn-open-loan-wizard');
+  if (loanBtn) loanBtn.onclick = openLoanContractModal;
+
+  const wheelBtn = document.getElementById('btn-spin-wheel');
+  if (wheelBtn) wheelBtn.onclick = spinWheel;
+
+  const createShopBtn = document.getElementById('btn-create-shop-item');
+  if (createShopBtn) createShopBtn.onclick = openCreateShopItemModal;
+}
+
 (function boot() {
+  bindGlobalButtons();
   if (initFirebase()) {
     if (checkSession()) {
       showDashboardView();

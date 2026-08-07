@@ -2024,4 +2024,34 @@ tbody tr:hover {
   @page { margin: 12mm 15mm; size: A4; }
   body { background: white; color: black; }
 }
+
+/* --- NEW COMPONENTS STYLING --- */
+#sub-panel {
+  width: 100%;
 }
+
+.wheel-wrapper {
+  position: relative;
+  display: inline-block;
+  margin: 10px auto;
+}
+
+#wheel-canvas {
+  background: #0d0d0d;
+  cursor: pointer;
+}
+
+.btn-loan-preset {
+  border-color: var(--purple) !important;
+  color: var(--purple) !important;
+}
+
+.btn-loan-preset:hover {
+  background: var(--purple) !important;
+  color: #000 !important;
+}
+
+.loan-addon input[type="checkbox"] {
+  accent-color: var(--red);
+}
+
