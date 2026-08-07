@@ -2776,23 +2776,30 @@ async function addPayment(amount, category, description, subId, dateStr, loanId)
   } catch (e) { return false; }
 }
 
+function isSameSub(id1, user1, id2, user2) {
+  if (id1 && id2 && String(id1) === String(id2)) return true;
+  const u1 = String(user1 || '').toLowerCase().trim().replace(/\s+/g, '');
+  const u2 = String(user2 || '').toLowerCase().trim().replace(/\s+/g, '');
+  if (u1 && u2 && u1 === u2) return true;
+  return false;
+}
+
 function getLoanPayments(lc) {
   if (!lc || !lc.id) return [];
   const curSubId = currentUser ? (currentUser.id || currentUser.uid) : lc.subId;
-  const fullLoanId = lc.id;
+  const fullLoanId = String(lc.id);
 
   return payments.filter(p => {
-    const matchSub = p.subId === lc.subId || p.subId === curSubId || p.paidBy === lc.username;
+    const matchSub = isSameSub(p.subId, p.paidBy, lc.subId, lc.username) ||
+                     isSameSub(p.subId, p.paidBy, curSubId, lc.username);
     if (!matchSub) return false;
 
     const isLoanCat = p.category === 'darlehen' || (p.description || '').toLowerCase().includes('darlehen');
     if (!isLoanCat) return false;
 
-    // Assign payment if the loanId explicitly matches full or prefix ID, or if description references contract ID
     return p.loanId === fullLoanId ||
-      (p.loanId && fullLoanId.startsWith(p.loanId)) ||
-      (p.loanId && p.loanId.startsWith(fullLoanId)) ||
-      (p.description && p.description.includes(fullLoanId.slice(0, 6).toUpperCase()));
+      (p.loanId && (fullLoanId.startsWith(p.loanId) || p.loanId.startsWith(fullLoanId))) ||
+      (p.description && p.description.toUpperCase().includes(fullLoanId.slice(0, 6).toUpperCase()));
   });
 }
 
@@ -2802,20 +2809,24 @@ async function syncLoanPaymentsFromPaidInvoices() {
   let changed = false;
 
   for (const ft of paidFTs) {
-    const subId = ft.subId;
-    const sub = (subs || []).find(s => s.id === subId);
-    const subUsername = sub ? sub.username : (ft.username || '');
+    const ftSub = (subs || []).find(s => isSameSub(s.id, s.username, ft.subId, ft.username));
+    const subId = ftSub ? ftSub.id : ft.subId;
+    const subUsername = ftSub ? ftSub.username : (ft.username || '');
     const payDate = ft.paidAt
       ? (ft.paidAt.seconds ? new Date(ft.paidAt.seconds * 1000) : new Date(ft.paidAt))
       : (ft.createdAt ? (ft.createdAt.seconds ? new Date(ft.createdAt.seconds * 1000) : new Date(ft.createdAt)) : new Date());
     const kw = getKW(ft.weekStart?.seconds ? new Date(ft.weekStart.seconds * 1000) : new Date(ft.weekStart || Date.now()));
 
+    // Find all loan contracts for this sub
+    const subLoans = loanContracts.filter(l => isSameSub(l.subId, l.username, subId, subUsername));
+    if (subLoans.length === 0) continue;
+
     let loanItems = [];
     if (Array.isArray(ft.openPositions)) {
-      loanItems = ft.openPositions.filter(p => p.type === 'loan');
+      loanItems = ft.openPositions.filter(p => p.type === 'loan' || (p.title || '').toLowerCase().includes('darlehen'));
     }
-    if (loanItems.length === 0 && (ft.loanCost > 0 || ft.baseAmount > 0)) {
-      const subLoans = loanContracts.filter(l => l.subId === subId || (subUsername && l.username === subUsername));
+
+    if (loanItems.length === 0 && (ft.loanCost > 0 || ft.baseAmount > 0 || ft.totalAmount > 0)) {
       subLoans.forEach(l => {
         const weeklyInt = round2(l.weeklyInterestAmount || ((l.principal || 0) * 0.10));
         const rate = round2(l.installmentRate || 0);
@@ -2829,17 +2840,20 @@ async function syncLoanPaymentsFromPaidInvoices() {
     }
 
     for (const item of loanItems) {
-      const loanId = item.id;
-      const lc = loanContracts.find(l => l.id === loanId || (subId && l.subId === subId));
+      const lc = subLoans.find(l => l.id === item.id) || subLoans[0];
       if (!lc) continue;
 
       const pmtAmount = parseFloat(item.amount) || round2((lc.weeklyInterestAmount || ((lc.principal || 0) * 0.10)) + (lc.installmentRate || 0));
       if (pmtAmount <= 0) continue;
 
-      const exists = payments.some(p =>
-        (p.fagTaxId && p.fagTaxId === ft.id && (p.loanId === lc.id || p.category === 'darlehen')) ||
-        (p.loanId === lc.id && p.description && p.description.includes(`FactoX KW ${kw}`))
-      );
+      const exists = payments.some(p => {
+        const sameSub = isSameSub(p.subId, p.paidBy, subId, subUsername);
+        if (!sameSub) return false;
+        const matchFT = p.fagTaxId && String(p.fagTaxId) === String(ft.id);
+        const matchLoan = p.loanId && (p.loanId === lc.id || lc.id.startsWith(p.loanId) || p.loanId.startsWith(lc.id));
+        const matchDesc = p.description && p.description.includes(`FactoX KW ${kw}`);
+        return matchFT || (matchLoan && matchDesc);
+      });
 
       if (!exists) {
         changed = true;
@@ -2847,8 +2861,8 @@ async function syncLoanPaymentsFromPaidInvoices() {
           amount: round2(pmtAmount),
           category: 'darlehen',
           description: `Darlehens-Ratenzahlung via FactoX KW ${kw} (#${lc.id.slice(0, 6).toUpperCase()})`,
-          paidBy: subUsername,
-          subId: subId,
+          paidBy: subUsername || lc.username || 'sub',
+          subId: subId || lc.subId || null,
           loanId: lc.id,
           fagTaxId: ft.id,
           createdAt: payDate,
@@ -2867,7 +2881,7 @@ async function syncLoanPaymentsFromPaidInvoices() {
         payments.push(pmtDoc);
 
         const loanPmts = getLoanPayments(lc);
-        const newPaidTotal = loanPmts.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
+        const newPaidTotal = Math.max(parseFloat(lc.totalPaid) || 0, loanPmts.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0));
         const startTotal = (lc.principal || 0) + (lc.addonsSum || 0);
         const isCompleted = newPaidTotal >= startTotal;
 
@@ -5145,7 +5159,8 @@ function renderDomLoansOverview() {
   }
   el.innerHTML = allLoans.map(lc => {
     const loanPayments = getLoanPayments(lc);
-    const totalPaid = loanPayments.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
+    const pmtsSum = loanPayments.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
+    const totalPaid = Math.max(parseFloat(lc.totalPaid) || 0, pmtsSum);
     const startTotal = (lc.principal || 0) + (lc.addonsSum || 0);
     const remaining = Math.max(0, startTotal - totalPaid);
 
@@ -5321,7 +5336,8 @@ async function checkAndApplyMahnstufen() {
   for (const lc of loanContracts) {
     if (lc.status === 'completed' || lc.status === 'inkasso_sold') continue;
     const loanPayments = getLoanPayments(lc);
-    const totalPaid = loanPayments.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
+    const pmtsSum = loanPayments.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
+    const totalPaid = Math.max(parseFloat(lc.totalPaid) || 0, pmtsSum);
     const startTotal = (lc.principal || 0) + (lc.addonsSum || 0);
     const remaining = Math.max(0, startTotal - totalPaid);
     if (remaining <= 0) continue;
@@ -5649,7 +5665,8 @@ function renderSubLoansView() {
 
     // Calculate total payments made specifically for THIS loan contract
     const loanPayments = getLoanPayments(lc);
-    const totalPaid = loanPayments.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
+    const pmtsSum = loanPayments.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
+    const totalPaid = Math.max(parseFloat(lc.totalPaid) || 0, pmtsSum);
     const remainingBalance = Math.max(0, startTotal - totalPaid);
     const progressPercent = Math.min(100, Math.round((totalPaid / (startTotal || 1)) * 100));
 
@@ -5767,7 +5784,8 @@ function drawLoanProgressChart(lc) {
 
   // Calculate actual total paid specifically for THIS loan contract
   const loanPayments = getLoanPayments(lc);
-  const totalPaid = loanPayments.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
+  const pmtsSum = loanPayments.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
+  const totalPaid = Math.max(parseFloat(lc.totalPaid) || 0, pmtsSum);
   const remainingBalance = Math.max(0, startTotal - totalPaid);
 
   // Determine actual simulation steps based on loan parameters
