@@ -2578,7 +2578,7 @@ function generateSubHumiliationStatementPDF(sub) {
 // SUBS UI (SCHWEINESTALL / PROFILE)
 // =============================================
 function renderSubs() {
-  const active = subs.filter(s => s.active !== false);
+  const active = subs;
   if (active.length === 0) { subsList.innerHTML = '<p class="empty-subs">Noch keine Säue angelegt.</p>'; return; }
 
   // Sort subs by total tribute paid (ranking)
@@ -2711,7 +2711,7 @@ function renderSubs() {
 }
 
 function populateSubSelects() {
-  const active = subs.filter(s => s.active !== false);
+  const active = subs;
   [inputSub, filterSub].forEach(sel => {
     const cur = sel.value;
     if (sel === filterSub) sel.innerHTML = '<option value="all">🐷 ALLE SÄUE</option>';
