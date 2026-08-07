@@ -1722,7 +1722,7 @@ tbody tr:hover {
     border-left: 3px solid var(--red);
   }
 
-  /* --- FORMS --- */
+  /* --- FORMS & BUTTONS RESPONSIVE FIXES --- */
   .form-row {
     flex-direction: column;
     gap: 0;
@@ -1731,11 +1731,21 @@ tbody tr:hover {
   .form-group input, .form-group select {
     font-size: 16px !important; /* Prevents iOS zoom */
     min-height: 48px;
+    max-width: 100%;
   }
 
   .btn {
-    min-height: 48px;
+    min-height: 44px;
     font-size: 0.8rem;
+    white-space: normal; /* Allow text wrapping on mobile if needed */
+    text-align: center;
+  }
+
+  .btn--sm {
+    min-height: 34px !important;
+    padding: 6px 10px !important;
+    font-size: 0.7rem !important;
+    letter-spacing: 0.05em;
   }
 
   /* --- SUBS LIST --- */
@@ -2025,6 +2035,63 @@ tbody tr:hover {
   body { background: white; color: black; }
 }
 
+/* --- RESPONSIVE FORM & FLEX UTILITIES --- */
+.input-btn-group {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.input-btn-group input,
+.input-btn-group select {
+  flex: 1;
+  min-width: 0;
+}
+
+.input-btn-group .btn {
+  flex-shrink: 0;
+}
+
+.form-action-row,
+.card-actions-responsive {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.text-truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 600px) {
+  .input-btn-group {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .input-btn-group input,
+  .input-btn-group select,
+  .input-btn-group .btn {
+    width: 100% !important;
+    flex: auto;
+  }
+
+  .form-action-row > .btn,
+  .card-actions-responsive > .btn {
+    width: 100% !important;
+    flex: 1 1 100%;
+  }
+}
+
 /* --- NEW COMPONENTS STYLING --- */
 #sub-panel {
   width: 100%;
@@ -2034,11 +2101,17 @@ tbody tr:hover {
   position: relative;
   display: inline-block;
   margin: 10px auto;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 #wheel-canvas {
   background: #0d0d0d;
   cursor: pointer;
+  max-width: 100%;
+  height: auto !important;
+  aspect-ratio: 1 / 1;
+  box-sizing: border-box;
 }
 
 .btn-loan-preset {
@@ -2053,5 +2126,25 @@ tbody tr:hover {
 
 .loan-addon input[type="checkbox"] {
   accent-color: var(--red);
+}
+
+/* --- PWA SAFE AREA INSETS --- */
+@supports (padding-bottom: env(safe-area-inset-bottom)) {
+  @media (max-width: 850px) {
+    .dash-header {
+      padding-top: env(safe-area-inset-top, 0px);
+    }
+    .dash-footer {
+      padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+      padding-left: calc(16px + env(safe-area-inset-left, 0px));
+      padding-right: calc(16px + env(safe-area-inset-right, 0px));
+    }
+    #dashboard-main {
+      padding-bottom: calc(85px + env(safe-area-inset-bottom, 0px)) !important;
+    }
+    .toast-container {
+      bottom: calc(85px + env(safe-area-inset-bottom, 0px)) !important;
+    }
+  }
 }
 

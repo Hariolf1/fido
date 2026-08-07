@@ -148,6 +148,34 @@ let currentSessionStart = 0;
 let accountChecks = [];
 let unsubscribeAccountChecks = null;
 let lastCheckSessions = null; // Sessions data from last account check (replaces window.__ftSessions)
+let isSubFagTaxUnlocked = false; // State flag to persist unlocked Factro-Einblick view
+
+function isAccountCheckedThisWeek() {
+  if (!currentUser || currentUser.role === 'dom') return true;
+  if (isSubFagTaxUnlocked) return true;
+  try {
+    if (sessionStorage.getItem('findom_isSubFagTaxUnlocked') === 'true') {
+      isSubFagTaxUnlocked = true;
+      return true;
+    }
+  } catch (_) {}
+  if (lastCheckSessions !== null) {
+    isSubFagTaxUnlocked = true;
+    return true;
+  }
+  const weekStart = getCurrentWeekStart();
+  const subId = currentUser.uid || currentUser.id;
+  const subUsername = currentUser.username;
+  const hasCheck = (accountChecks || []).some(c => {
+    const t = c.createdAt ? (c.createdAt.seconds ? c.createdAt.seconds * 1000 : (c.createdAt instanceof Date ? c.createdAt.getTime() : 0)) : 0;
+    return (c.subId === subId || c.subId === subUsername) && t >= weekStart.getTime();
+  });
+  if (hasCheck) {
+    isSubFagTaxUnlocked = true;
+    try { sessionStorage.setItem('findom_isSubFagTaxUnlocked', 'true'); } catch (_) {}
+  }
+  return hasCheck;
+}
 
 // Session visibility tracking (Subs only)
 const INACTIVITY_TIMEOUT_MS = 30 * 1000;    // 30s hidden → auto-logout
@@ -202,16 +230,29 @@ function calculateWeeklyFagTax(sub, weekStart, sessionsArr, paymentsArr, checksA
       ).length
     : 0;
 
-  // Sum seconds within week bounds (closed sessions)
+  // Sum seconds within week bounds (closed & active sessions)
   const closedSeconds = cfg.minutesEnabled !== false
     ? sessionsArr.filter(s =>
         s.subId === sub.id &&
         toMs(s.loginTime) >= wStart.getTime() &&
         toMs(s.loginTime) < upperBoundMs
-      ).reduce((sum, s) => sum + (s.durationSeconds || s.durationMinutes * 60 || 0), 0)
+      ).reduce((sum, s) => {
+        if (s.durationSeconds || s.durationMinutes) {
+          return sum + (s.durationSeconds || s.durationMinutes * 60 || 0);
+        }
+        // Active session fallback if durationSeconds is not yet written
+        if (s.active && s.loginTime) {
+          const lMs = toMs(s.loginTime);
+          if (lMs > 0) {
+            const endMs = s.lastHeartbeat ? Math.max(lMs, toMs(s.lastHeartbeat)) : Date.now();
+            return sum + Math.max(0, Math.floor((endMs - lMs) / 1000));
+          }
+        }
+        return sum;
+      }, 0)
     : 0;
 
-  // Add live seconds if requested
+  // Add live seconds if requested and not already included above
   const liveSeconds = opts.includeLiveSeconds ? (cfg.minutesEnabled !== false ? getLiveSessionSeconds() : 0) : 0;
   const totalSeconds = closedSeconds + liveSeconds;
 
@@ -256,14 +297,13 @@ function calculateWeeklyFagTax(sub, weekStart, sessionsArr, paymentsArr, checksA
   const yearTotal = paymentsArr.filter(p => {
     const match = p.subId === sub.id || p.subId === sub.uid || p.paidBy === sub.username;
     const isConfirmed = p.confirmed !== false && p.status !== 'pending_confirmation';
-    // Handle pending serverTimestamp (null createdAt)
     const ts = p.createdAt ? toMs(p.createdAt) : Date.now();
     return match && isConfirmed && ts >= startMs;
   }).reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
 
   const taxAmount = cfg.taxEnabled !== false ? round2(yearTotal * taxRate * fridayMultiplier) : 0;
 
-  // Account check costs within week bounds (supports JS Date, Timestamp, or pending serverTimestamp)
+  // Account check costs within week bounds
   const checkCost = round2(checksArr
     .filter(c => c.subId === sub.id && c.createdAt &&
             (toMs(c.createdAt) || Date.now()) >= wStart.getTime() &&
@@ -273,22 +313,147 @@ function calculateWeeklyFagTax(sub, weekStart, sessionsArr, paymentsArr, checksA
   // Active Loan costs (weekly 10% interest + due installment rate)
   const subLoans = (loanContracts || []).filter(l =>
     (l.subId === sub.id || (sub.username && l.username === sub.username)) &&
-    l.status !== 'completed'
+    l.status !== 'completed' && l.status !== 'inkasso_sold'
   );
-  const loanCost = round2(subLoans.reduce((sum, l) => {
-    const weeklyInt = l.weeklyInterestAmount || ((l.principal || 0) * 0.10);
-    const rate = l.installmentRate || 0;
-    return sum + weeklyInt + rate;
-  }, 0));
+  const loanItems = subLoans.map(l => {
+    const weeklyInt = round2(l.weeklyInterestAmount || ((l.principal || 0) * 0.10));
+    const rate = round2(l.installmentRate || 0);
+    const totalItem = round2(weeklyInt + rate);
+    const loanIdShort = (l.id || '').slice(0, 6).toUpperCase();
+    return {
+      id: l.id,
+      type: 'loan',
+      title: `Darlehen #${loanIdShort}: Rate & Wöchentliche Zinsen`,
+      desc: `10% Zinsen (${weeklyInt.toFixed(2).replace('.',',')}€) + Tilgungsrate (${rate.toFixed(2).replace('.',',')}€)`,
+      qty: '1 Rate+Zins',
+      unitPrice: totalItem,
+      amount: totalItem,
+      weeklyInterest: weeklyInt,
+      installmentRate: rate
+    };
+  });
+  const loanCost = round2(loanItems.reduce((sum, l) => sum + l.amount, 0));
 
-  const baseAmount = round2(loginCost + timeCost + taxAmount + checkCost + loanCost);
+  // Offene Glücksrad-Strafen (unpaid wheel spins during week or rolled over)
+  const openSpins = (wheelSpins || []).filter(w =>
+    (w.subId === sub.id || (sub.username && w.username === sub.username)) &&
+    !w.paid
+  );
+  const wheelItems = openSpins.map(w => {
+    const mahnStufe = w.mahnStufe || 0;
+    const mahnFee = mahnStufe * 5;
+    const totalItem = round2((w.prizeAmount || 0) + mahnFee);
+    return {
+      id: w.id,
+      type: 'wheel',
+      title: `Glücksrad-Strafe: ${w.prizeTitle || 'Gewinn-Strafe'}`,
+      desc: mahnStufe > 0 ? `Mahnstufe ${mahnStufe} (+${mahnFee.toFixed(2).replace('.',',')}€ Gebühr)` : 'Unbezahlte Strafe aus der Woche',
+      qty: '1 Strafe',
+      unitPrice: totalItem,
+      amount: totalItem,
+      prizeAmount: w.prizeAmount || 0,
+      mahnFee
+    };
+  });
+  const wheelSpinCost = round2(wheelItems.reduce((sum, w) => sum + w.amount, 0));
+
+  // Build itemized openPositions array
+  const openPositions = [];
+
+  if (loginCost > 0 || logins > 0) {
+    openPositions.push({
+      type: 'login',
+      title: 'Login-Gebühren',
+      desc: `${logins} Logins (du zahlst fürs Anschauen, Loser)`,
+      qty: `${logins} Logins`,
+      unitPrice: perLogin,
+      amount: loginCost
+    });
+  }
+
+  if (timeCost > 0 || totalSeconds > 0) {
+    openPositions.push({
+      type: 'time',
+      title: 'Zeit-Gebühren',
+      desc: `Dauer: ${formatDuration(totalSeconds)} (jede Sekunde kostet Geld)`,
+      qty: formatDuration(totalSeconds),
+      unitPrice: perSec,
+      amount: timeCost
+    });
+  }
+
+  if (taxAmount > 0) {
+    const taxPctStr = `${((activePenalties.double_interest_3w ? 0.06 : 0.03) * (fridayMultiplier) * 100).toFixed(0)}%`;
+    openPositions.push({
+      type: 'tax',
+      title: `Fag-Tax Steuer (${taxPctStr})`,
+      desc: `${yearTotal.toFixed(2).replace('.', ',')}€ Jahresbasis ${penaltyMultiplierNotice.join(' | ')}`,
+      qty: `${yearTotal.toFixed(2).replace('.', ',')}€ Jahresbasis`,
+      unitPrice: taxPctStr,
+      amount: taxAmount
+    });
+  }
+
+  if (checkCost > 0) {
+    openPositions.push({
+      type: 'checks',
+      title: 'Kontoprüfungen',
+      desc: 'Gebühren für veranlasste Konto-Auditprüfungen',
+      qty: '1 Stk',
+      unitPrice: checkCost,
+      amount: checkCost
+    });
+  }
+
+  loanItems.forEach(item => openPositions.push(item));
+  wheelItems.forEach(item => openPositions.push(item));
+
+  // Add active special duration penalties from wheel spins (e.g. 3 weeks double interest, double Friday tax)
+  if (activePenalties.double_interest_3w && activePenalties.double_interest_3w.until) {
+    const untilMs = toMs(activePenalties.double_interest_3w.until);
+    if (Date.now() <= untilMs || wStart.getTime() <= untilMs) {
+      const actMs = activePenalties.double_interest_3w.activatedAt ? toMs(activePenalties.double_interest_3w.activatedAt) : (untilMs - 21 * 86400000);
+      const startKW = getKW(new Date(actMs));
+      const endKW = getKW(new Date(untilMs));
+      const untilStr = new Date(untilMs).toLocaleDateString('de-DE');
+      openPositions.push({
+        type: 'info_penalty',
+        title: '🎰 Glücksrad-Sonderstrafe: 3 Wochen doppelte Fag-Tax Zinsen (6% statt 3%)',
+        desc: `Laufzeit: KW ${startKW} bis KW ${endKW} (aktiv bis ${untilStr}) — Zeitstrafe (keine Einmalschuld, läuft über Zeit ab)`,
+        qty: `KW ${startKW}–${endKW}`,
+        unitPrice: '—',
+        amount: 0
+      });
+    }
+  }
+
+  if (activePenalties.double_tax_friday && activePenalties.double_tax_friday.until) {
+    const untilMs = toMs(activePenalties.double_tax_friday.until);
+    if (Date.now() <= untilMs || wStart.getTime() <= untilMs) {
+      const actMs = activePenalties.double_tax_friday.activatedAt ? toMs(activePenalties.double_tax_friday.activatedAt) : (untilMs - 7 * 86400000);
+      const startKW = getKW(new Date(actMs));
+      const endKW = getKW(new Date(untilMs));
+      const untilStr = new Date(untilMs).toLocaleDateString('de-DE');
+      openPositions.push({
+        type: 'info_penalty',
+        title: '⚡ Glücksrad-Sonderstrafe: 2x Freitags-Doppel-Tax',
+        desc: `Laufzeit: KW ${startKW} bis KW ${endKW} (aktiv bis ${untilStr}) — Zeitstrafe (keine Einmalschuld, läuft über Zeit ab)`,
+        qty: `KW ${startKW}–${endKW}`,
+        unitPrice: '—',
+        amount: 0
+      });
+    }
+  }
+
+  const baseAmount = round2(loginCost + timeCost + taxAmount + checkCost + loanCost + wheelSpinCost);
 
   return {
     logins, closedSeconds, liveSeconds, totalSeconds,
-    loginCost, timeCost, taxAmount, checkCost, loanCost,
+    loginCost, timeCost, taxAmount, checkCost, loanCost, wheelSpinCost,
     yearTotal, baseAmount,
     perLogin, perSec, taxRate, fridayMultiplier,
-    penaltyNotice: penaltyMultiplierNotice.join(' | ')
+    penaltyNotice: penaltyMultiplierNotice.join(' | '),
+    loanItems, wheelItems, openPositions
   };
 }
 
@@ -465,6 +630,7 @@ async function logout() {
   lastCheckSessions = null;
   activeSessionSeconds = 0;
   tabHiddenAt = null;
+  isSubFagTaxUnlocked = false;
 
   // 7. Clear persistence
   try { localStorage.removeItem('findom_session'); } catch (_) {}
@@ -472,6 +638,7 @@ async function logout() {
     sessionStorage.removeItem('findom_session');
     sessionStorage.removeItem('findom_sessionId');
     sessionStorage.removeItem('findom_activeSeconds');
+    sessionStorage.removeItem('findom_isSubFagTaxUnlocked');
   } catch (_) {}
 }
 
@@ -523,8 +690,12 @@ async function startSession() {
 async function heartbeat() {
   if (!db || !currentSessionId) return;
   try {
+    const secs = Math.max(1, activeSessionSeconds || 1);
+    const mins = Math.max(1, Math.round(secs / 60));
     await db.collection('sessions').doc(currentSessionId).update({
-      lastHeartbeat: firebase.firestore.FieldValue.serverTimestamp()
+      lastHeartbeat: firebase.firestore.FieldValue.serverTimestamp(),
+      durationSeconds: secs,
+      durationMinutes: mins
     });
   } catch (_) {}
 }
@@ -829,9 +1000,11 @@ function startSubSessionsListener() {
           sessions.push(data);
         }
       });
-      // Keep lastCheckSessions in sync only if already unlocked via checkAccount
-      if (lastCheckSessions !== null) {
+      // Keep lastCheckSessions in sync if already unlocked via checkAccount
+      if (isAccountCheckedThisWeek()) {
         lastCheckSessions = sessions;
+        renderSubFagTaxCounters();
+        renderPayments();
       }
     }, err => console.warn('Sub sessions listener error:', err.message));
 }
@@ -1306,6 +1479,12 @@ function startAccountChecksListener() {
     snap.forEach(d => accountChecks.push({ id: d.id, ...d.data() }));
     if (currentUser.role === 'dom') {
       renderFagTaxOverview();
+    } else {
+      if (isAccountCheckedThisWeek()) {
+        if (lastCheckSessions === null) lastCheckSessions = sessions;
+        renderSubFagTaxCounters();
+        renderPayments();
+      }
     }
   }, err => {
     console.warn('AccountChecks listener error:', err.message);
@@ -1345,6 +1524,8 @@ function generateCheckAmount() {
 
 async function subCheckAccount() {
   if (currentUser.role !== 'sub' || !db) return;
+  isSubFagTaxUnlocked = true;
+  try { sessionStorage.setItem('findom_isSubFagTaxUnlocked', 'true'); } catch (_) {}
   const amount = generateCheckAmount();
   const rounded = round2(amount);
   try {
@@ -1404,13 +1585,13 @@ async function subCheckAccount() {
     const msg = insults[insultIndex];
     showAlert('🐷 KONTOPRÜFUNG', msg);
 
-    // Update UI immediately
-    renderSubFagTaxView();
-    updateTotals();
-
     // #18: Store sessions for renderSubFagTaxCounters (replaces window.__ftSessions)
     lastCheckSessions = weekSessions;
-    renderSubFagTaxCounters();
+
+    // Update UI immediately
+    renderSubFagTaxView();
+    renderPayments();
+    updateTotals();
   } catch (e) {
     showAlert('FEHLER', 'Fehler bei Kontoprüfung. Versuch es nochmal, Loser.');
   }
@@ -1467,6 +1648,9 @@ async function autoCreateFagTaxes() {
           yearTotal: calc.yearTotal,
           taxAmount: calc.taxAmount,
           checkCost: calc.checkCost,
+          loanCost: calc.loanCost,
+          wheelSpinCost: calc.wheelSpinCost,
+          openPositions: calc.openPositions || [],
           baseAmount: calc.baseAmount,
           carriedInterest: effectiveCarriedInterest,
           totalAmount
@@ -1484,6 +1668,8 @@ async function autoCreateFagTaxes() {
           loginsCount: calc.logins, minutesCount: Math.ceil(calc.totalSeconds / 60),
           secondsCount: calc.totalSeconds, loginCost: calc.loginCost, minuteCost: calc.timeCost,
           yearTotal: calc.yearTotal, taxAmount: calc.taxAmount, checkCost: calc.checkCost,
+          loanCost: calc.loanCost, wheelSpinCost: calc.wheelSpinCost,
+          openPositions: calc.openPositions || [],
           baseAmount: calc.baseAmount,
           carriedInterest: carriedInterest.length > 0 ? carriedInterest : [],
           totalAmount,
@@ -1559,6 +1745,9 @@ async function autoCloseCompletedWeeks() {
             yearTotal: calc.yearTotal,
             taxAmount: calc.taxAmount,
             checkCost: calc.checkCost,
+            loanCost: calc.loanCost,
+            wheelSpinCost: calc.wheelSpinCost,
+            openPositions: calc.openPositions || [],
             baseAmount: calc.baseAmount,
             carriedInterest: carriedInterest.length > 0 ? carriedInterest : [],
             totalAmount
@@ -1580,6 +1769,9 @@ async function autoCloseCompletedWeeks() {
             yearTotal: calc.yearTotal,
             taxAmount: calc.taxAmount,
             checkCost: calc.checkCost,
+            loanCost: calc.loanCost,
+            wheelSpinCost: calc.wheelSpinCost,
+            openPositions: calc.openPositions || [],
             baseAmount: calc.baseAmount,
             carriedInterest: carriedInterest.length > 0 ? carriedInterest : [],
             totalAmount,
@@ -1592,6 +1784,167 @@ async function autoCloseCompletedWeeks() {
   }
 }
 
+async function settleAllFagTaxPositions(ft, payDate = new Date(), intAmt = 0, totalPmt = 0, kw = '') {
+  if (!ft) return;
+  const subId = ft.subId;
+  const sub = subs.find(s => s.id === subId);
+  const subUsername = sub ? sub.username : (ft.username || '');
+  const pmtAmount = totalPmt || ft.totalAmount || 0;
+
+  // 1. Record payment in payments collection
+  let pmtRefId = null;
+  try {
+    if (db) {
+      const pmtRef = await db.collection('payments').add({
+        amount: pmtAmount,
+        category: 'fag-tax',
+        description: `Facto-Rechnung KW ${kw || getKW(ft.weekStart?.seconds ? new Date(ft.weekStart.seconds * 1000) : new Date(ft.weekStart || Date.now()))} Gesamtbegleichung`,
+        paidBy: subUsername,
+        subId: subId,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+        createdBy: currentUser ? currentUser.role : 'dom'
+      });
+      pmtRefId = pmtRef.id;
+    }
+  } catch (e) {
+    console.warn('Payment record error during settlement:', e);
+  }
+
+  // 2. Mark FagTax doc as paid in Firestore
+  if (db && ft.id) {
+    await db.collection('fagTaxes').doc(ft.id).update({
+      paid: true,
+      paidAt: payDate,
+      interestAmount: intAmt,
+      totalWithInterest: pmtAmount,
+      paymentId: pmtRefId || null
+    }).catch(e => console.warn('fagTaxes update error:', e));
+  }
+  ft.paid = true;
+  ft.paidAt = payDate;
+  if (intAmt > 0) ft.interestAmount = intAmt;
+
+  // 3. Mark all open Wheel Spins for this sub as paid
+  const openSpins = (wheelSpins || []).filter(w =>
+    (w.subId === subId || (subUsername && w.username === subUsername)) && !w.paid
+  );
+  for (const sp of openSpins) {
+    sp.paid = true;
+    sp.paidAt = payDate;
+    if (db && sp.id) {
+      await db.collection('wheelSpins').doc(sp.id).update({
+        paid: true,
+        paidAt: payDate
+      }).catch(() => {});
+    }
+  }
+
+  // Dual-sync wheelSpinsArr on sub doc
+  if (subId && db && openSpins.length > 0) {
+    try {
+      const subDocRef = db.collection('subs').doc(subId);
+      const subDoc = await subDocRef.get();
+      if (subDoc.exists) {
+        const arr = subDoc.data().wheelSpinsArr || [];
+        let updated = false;
+        arr.forEach(w => {
+          if (!w.paid) { w.paid = true; w.paidAt = payDate; updated = true; }
+        });
+        if (updated) {
+          await subDocRef.set({ wheelSpinsArr: arr }, { merge: true });
+        }
+      }
+    } catch (e) { console.warn('sub doc wheelSpinsArr update notice:', e); }
+  }
+
+  // 4. Update active Loan Contracts for this sub
+  const activeLoans = (loanContracts || []).filter(l =>
+    (l.subId === subId || (subUsername && l.username === subUsername)) &&
+    l.status !== 'completed' && l.status !== 'inkasso_sold'
+  );
+  for (const lc of activeLoans) {
+    const weeklyInt = lc.weeklyInterestAmount || ((lc.principal || 0) * 0.10);
+    const rate = lc.installmentRate || 0;
+    const duePmt = weeklyInt + rate;
+
+    const existingLoanPayments = getLoanPayments(lc);
+    const prevPaid = existingLoanPayments.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
+    const newPaidTotal = prevPaid + duePmt;
+    const startTotal = (lc.principal || 0) + (lc.addonsSum || 0);
+    const isCompleted = newPaidTotal >= startTotal;
+
+    if (db && lc.id) {
+      await db.collection('loanContracts').doc(lc.id).update({
+        totalPaid: newPaidTotal,
+        status: isCompleted ? 'completed' : 'active',
+        lastPaidAt: payDate
+      }).catch(e => console.warn('loanContracts update error:', e));
+    }
+    lc.totalPaid = newPaidTotal;
+    if (isCompleted) lc.status = 'completed';
+
+    if (subId && db) {
+      try {
+        const subDocRef = db.collection('subs').doc(subId);
+        const subDoc = await subDocRef.get();
+        if (subDoc.exists) {
+          const arr = subDoc.data().loanContractsArr || [];
+          let updated = false;
+          arr.forEach(l => {
+            if (l.id === lc.id) {
+              l.totalPaid = newPaidTotal;
+              if (isCompleted) l.status = 'completed';
+              l.lastPaidAt = payDate;
+              updated = true;
+            }
+          });
+          if (updated) {
+            await subDocRef.set({ loanContractsArr: arr }, { merge: true });
+          }
+        }
+      } catch (e) { console.warn('sub doc loanContractsArr update notice:', e); }
+    }
+  }
+
+  // 5. Carry forward any late interest if applicable
+  if (intAmt > 0 && kw) {
+    const nextFT = fagTaxes
+      .filter(f => !f.paid && f.subId === subId && f.weekStart && f.weekStart.seconds
+        && f.weekStart.seconds * 1000 > (ft.weekStart?.seconds ? ft.weekStart.seconds * 1000 : 0))
+      .sort((a, b) => a.weekStart.seconds - b.weekStart.seconds)[0];
+    if (nextFT) {
+      const existingCI = nextFT.carriedInterest || [];
+      if (!existingCI.some(c => String(c.sourceKW) === String(kw))) {
+        existingCI.push({ sourceKW: String(kw), amount: intAmt });
+        const carriedSum = existingCI.reduce((s, c) => s + (c.amount || 0), 0);
+        const nextBase = nextFT.baseAmount || nextFT.totalAmount || 0;
+        const newTotal = Math.round((nextBase + carriedSum) * 100) / 100;
+        if (db && nextFT.id) {
+          await db.collection('fagTaxes').doc(nextFT.id).update({
+            carriedInterest: existingCI,
+            totalAmount: newTotal
+          }).catch(() => {});
+        }
+      }
+    }
+  }
+
+  // 6. Refresh UI components
+  if (currentUser) {
+    if (currentUser.role === 'dom') {
+      renderFagTaxOverview();
+      renderDomFagTaxInvoices();
+      renderDomWheelOverview();
+      renderDomLoansOverview();
+    } else {
+      renderSubFagTaxView();
+      renderSubFagTaxInvoices();
+      renderSubLoansView();
+      renderWheelPendingNotices();
+    }
+  }
+}
+
 async function markFagTaxPaid(ft) {
   if (!ft) return;
   const sub = subs.find(s => s.id === ft.subId);
@@ -1599,11 +1952,8 @@ async function markFagTaxPaid(ft) {
   const ws = ft.weekStart && ft.weekStart.seconds ? new Date(ft.weekStart.seconds * 1000) : new Date(ft.weekStart);
   const dueDate = getDueDate(ws);
   const kw = getKW(ws);
-  // #15: Recalculate baseAmount to ensure checkCost is included
-  // For newer FagTaxes (with checkCost stored), use stored value; otherwise recalculate
   let baseAmount = ft.baseAmount || ft.totalAmount || 0;
   if (ft.checkCost === undefined && sub) {
-    // Old FagTax without checkCost — recalculate
     const ftWS = ft.weekStart?.seconds ? new Date(ft.weekStart.seconds * 1000) : ws;
     const storedCheckCost = sumWeeklyChecks(sub.id, ftWS);
     baseAmount = round2(baseAmount + storedCheckCost);
@@ -1614,7 +1964,6 @@ async function markFagTaxPaid(ft) {
   const todayStr = new Date().toISOString().split('T')[0];
   const dueStr = dueDate.toISOString().split('T')[0];
 
-  // Build carried interest breakdown HTML
   let carriedHTML = '';
   for (const ci of carried) {
     carriedHTML += `<div style="display:flex;justify-content:space-between;font-size:0.75rem;color:var(--purple);padding-left:8px">
@@ -1627,7 +1976,7 @@ async function markFagTaxPaid(ft) {
     <p style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:8px">Fällig am: <strong>${dueDate.toLocaleDateString('de-DE')}</strong> (Freitag)</p>
     <div style="margin-bottom:16px;padding:12px;background:var(--bg-hover);border-radius:8px">
       <div style="display:flex;justify-content:space-between;margin-bottom:6px">
-        <span>Basis (Logins+Zeit+Steuer):</span><span style="font-weight:900">${baseAmount.toFixed(2).replace('.', ',')}€</span>
+        <span>Basis (Logins+Zeit+Steuer+Strafen+Darlehen):</span><span style="font-weight:900">${baseAmount.toFixed(2).replace('.', ',')}€</span>
       </div>
       ${carriedHTML}
       <hr style="border-color:var(--border);margin:8px 0">
@@ -1703,44 +2052,9 @@ async function markFagTaxPaid(ft) {
     const totalPmt = Math.round((billTotal + intAmt) * 100) / 100;
 
     try {
-      const pmtRef = await db.collection('payments').add({
-        amount: totalPmt, category: 'fag-tax',
-        description: `Fag-Tax KW ${kw}`,
-        paidBy: sub.username, subId: sub.id,
-        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-        createdBy: 'dom'
-      });
-      await db.collection('fagTaxes').doc(ft.id).update({
-        paid: true,
-        paidAt: payDate,
-        interestAmount: intAmt,
-        totalWithInterest: totalPmt,
-        paymentId: pmtRef.id
-      });
-
-      // Carry interest to the next unpaid FagTax for this sub
-      if (intAmt > 0) {
-        const nextFT = fagTaxes
-          .filter(f => !f.paid && f.subId === sub.id && f.weekStart && f.weekStart.seconds
-            && f.weekStart.seconds * 1000 > (ft.weekStart?.seconds ? ft.weekStart.seconds * 1000 : 0))
-          .sort((a, b) => a.weekStart.seconds - b.weekStart.seconds)[0];
-        if (nextFT) {
-          const existingCI = nextFT.carriedInterest || [];
-          if (!existingCI.some(c => String(c.sourceKW) === String(kw))) {
-            existingCI.push({ sourceKW: String(kw), amount: intAmt });
-            const carriedSum = existingCI.reduce((s, c) => s + (c.amount || 0), 0);
-            const nextBase = nextFT.baseAmount || nextFT.totalAmount || 0;
-            const newTotal = Math.round((nextBase + carriedSum) * 100) / 100;
-            await db.collection('fagTaxes').doc(nextFT.id).update({
-              carriedInterest: existingCI,
-              totalAmount: newTotal
-            });
-          }
-        }
-      }
-
+      await settleAllFagTaxPositions(ft, payDate, intAmt, totalPmt, kw);
       closeModal();
-      showToast(`Fag-Tax KW ${kw} bezahlt (${totalPmt.toFixed(2).replace('.',',')}€)`, 'success');
+      showToast(`Facto-Rechnung KW ${kw} & alle offenen Positionen bezahlt (${totalPmt.toFixed(2).replace('.',',')}€)`, 'success');
     } catch (e) {
       console.error(e);
       showToast('Fehler bei Zahlung', 'error');
@@ -2111,48 +2425,40 @@ function generateFagTaxInvoice(sub, logins, seconds, loginCost, minuteCost, taxA
         <tr><th>POS.</th><th>LEISTUNG</th><th>MENGE</th><th class="ta-right">EINZELPREIS</th><th class="ta-right">GESAMT</th></tr>
       </thead>
       <tbody>
-        <tr>
-          <td>1</td>
-          <td>Login-Gebühren (du zahlst fürs Anschauen, Loser)</td>
-          <td>${logins} Logins</td>
-          <td class="ta-right mono">${(cfg.perLogin || 1).toFixed(2).replace('.',',')}€</td>
-          <td class="ta-right mono">${loginCost.toFixed(2).replace('.', ',')}€</td>
-        </tr>
-        <tr>
-          <td>2</td>
-          <td>Zeit-Gebühren (jede Sekunde kostet dich Geld)</td>
-          <td>${formatDuration(seconds)}</td>
-          <td class="ta-right mono">${perSec.toFixed(4).replace('.',',')}€/Sek</td>
-          <td class="ta-right mono">${minuteCost.toFixed(2).replace('.', ',')}€</td>
-        </tr>
-        <tr>
-          <td>3</td>
-          <td>Fag-Tax Steuer ${penaltyBadge}</td>
-          <td>${yearTotal.toFixed(2).replace('.', ',')}€ Jahresbasis</td>
-          <td class="ta-right mono">${((doubleInt ? 0.06 : 0.03) * (doubleTax ? 2 : 1) * 100).toFixed(0)}%</td>
-          <td class="ta-right mono">${taxAmount.toFixed(2).replace('.', ',')}€</td>
-        </tr>
-        <tr>
-          <td>4</td>
-          <td>Kontoprüfungen (Neugier bestraft)</td>
-          <td>${checksCount} Prüfungen</td>
-          <td class="ta-right mono">1,00–3,99€/Stk</td>
-          <td class="ta-right mono">${checkCost.toFixed(2).replace('.', ',')}€</td>
-        </tr>
-        ${(carriedArr || []).map((c, idx) => `<tr>
-          <td>${5 + idx}</td>
-          <td>${SVG_PDF_ICONS.fire} Verzugszinsen aus Rechnung KW ${c.sourceKW} (vorgetragen)</td>
-          <td>—</td>
-          <td class="ta-right mono">—</td>
-          <td class="ta-right mono" style="color:#cc0000">${(c.amount || 0).toFixed(2).replace('.', ',')}€</td>
-        </tr>`).join('')}
-        ${interestAmount > 0 ? `<tr>
-          <td>${5 + (carriedArr || []).length}</td>
-          <td>${SVG_PDF_ICONS.fire} Verzugszinsen (täglich steigend, ${calculateLateInterestDays(existingFT ? existingFT.weekStart : null)} Tage verspätet)</td>
-          <td>—</td>
-          <td class="ta-right mono">—</td>
-          <td class="ta-right mono" style="color:#cc0000">${interestAmount.toFixed(2).replace('.', ',')}€</td>
-        </tr>` : ''}
+        ${(() => {
+          let positions = (existingFT && Array.isArray(existingFT.openPositions) && existingFT.openPositions.length > 0)
+            ? JSON.parse(JSON.stringify(existingFT.openPositions))
+            : [];
+          if (positions.length === 0) {
+            if (loginCost > 0 || logins > 0) positions.push({ title: 'Login-Gebühren (du zahlst fürs Anschauen, Loser)', qty: `${logins} Logins`, unitPrice: (cfg.perLogin || 1).toFixed(2) + '€', amount: loginCost });
+            if (minuteCost > 0 || seconds > 0) positions.push({ title: 'Zeit-Gebühren (jede Sekunde kostet dich Geld)', qty: formatDuration(seconds), unitPrice: perSec.toFixed(4) + '€/Sek', amount: minuteCost });
+            if (taxAmount > 0) positions.push({ title: `Fag-Tax Steuer ${penaltyBadge}`, qty: `${yearTotal.toFixed(2).replace('.',',')}€ Jahresbasis`, unitPrice: `${((doubleInt ? 0.06 : 0.03) * (doubleTax ? 2 : 1) * 100).toFixed(0)}%`, amount: taxAmount });
+            if (checkCost > 0) positions.push({ title: 'Kontoprüfungen (Neugier bestraft)', qty: `${checksCount} Prüfungen`, unitPrice: '1,00-3,99€', amount: checkCost });
+          }
+          (carriedArr || []).forEach(c => {
+            positions.push({
+              title: `${SVG_PDF_ICONS.fire} Verzugszinsen aus KW ${c.sourceKW} (vorgetragen)`,
+              qty: '—',
+              unitPrice: '—',
+              amount: c.amount || 0
+            });
+          });
+          if (interestAmount > 0) {
+            positions.push({
+              title: `${SVG_PDF_ICONS.fire} Verzugszinsen (täglich steigend)`,
+              qty: '—',
+              unitPrice: '—',
+              amount: interestAmount
+            });
+          }
+          return positions.map((p, idx) => `<tr>
+            <td>${idx + 1}</td>
+            <td><strong>${escapeHtml(p.title)}</strong>${p.desc ? `<br><span style="font-size:7pt;color:#555">${escapeHtml(p.desc)}</span>` : ''}</td>
+            <td>${escapeHtml(String(p.qty || '1'))}</td>
+            <td class="ta-right mono">${typeof p.unitPrice === 'number' ? (p.unitPrice.toFixed(2).replace('.', ',') + '€') : escapeHtml(String(p.unitPrice || '—'))}</td>
+            <td class="ta-right mono" style="font-weight:700">${p.type === 'info_penalty' ? '—' : (p.amount || 0).toFixed(2).replace('.', ',') + '€'}</td>
+          </tr>`).join('');
+        })()}
       </tbody>
     </table>
 
@@ -2428,8 +2734,8 @@ function renderDashboard() {
 function renderPayments() {
   const isDom = currentUser.role === 'dom';
 
-  // For Subs: Hide payment history table unless account check has been unlocked in current session
-  if (!isDom && !lastCheckSessions) {
+  // For Subs: Hide payment history table unless account check has been unlocked
+  if (!isDom && !isAccountCheckedThisWeek()) {
     paymentsTbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:30px;color:var(--text-dim);font-weight:700">🔒 ZAHLUNGSVERLAUF GESPERRT<br><span style="font-size:0.75rem;font-weight:normal;color:var(--text-muted)">Schalte deine Kontoübersicht oben per "KONTO PRÜFEN" frei.</span></td></tr>';
     emptyState.style.display = 'none';
     return;
@@ -2614,11 +2920,11 @@ function renderSubs() {
     if (isEditing) {
       return `<div class="sub-edit-row" data-id="${s.id}" style="padding:12px;background:var(--bg-surface);border:1px solid var(--border);border-radius:4px;margin-bottom:10px">
         <div class="sub-edit-fields" style="display:flex;flex-direction:column;gap:6px">
-          <input type="text" class="sub-edit-user" value="${escapeHtml(s.username)}" placeholder="Benutzername" style="padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text)">
-          <input type="text" class="sub-edit-name" value="${escapeHtml(s.displayName || s.username)}" placeholder="Anzeigename" style="padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text)">
-          <input type="text" class="sub-edit-pw" value="${escapeHtml(s.password || '')}" placeholder="Passwort" style="padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text)">
+          <input type="text" class="sub-edit-user" value="${escapeHtml(s.username)}" placeholder="Benutzername" style="padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);width:100%">
+          <input type="text" class="sub-edit-name" value="${escapeHtml(s.displayName || s.username)}" placeholder="Anzeigename" style="padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);width:100%">
+          <input type="text" class="sub-edit-pw" value="${escapeHtml(s.password || '')}" placeholder="Passwort" style="padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);width:100%">
         </div>
-        <div class="sub-edit-actions" style="margin-top:8px;display:flex;gap:6px">
+        <div class="sub-edit-actions form-action-row" style="margin-top:8px">
           <button class="btn btn--sm btn--success" data-id="${s.id}">💾 SPEICHERN</button>
           <button class="btn btn--sm btn--ghost">✕ ABBRECHEN</button>
         </div>
@@ -3182,6 +3488,15 @@ function formatDuration(totalSecs) {
 function renderSubFagTaxView() {
   if (currentUser.role !== 'sub') return;
 
+  // If unlocked, render counters view instead of locking again
+  if (isAccountCheckedThisWeek()) {
+    if (lastCheckSessions === null) lastCheckSessions = sessions;
+    renderSubFagTaxCounters();
+    renderSubFagTaxHistory();
+    renderSubFagTaxInvoices();
+    return;
+  }
+
   // Remove old counter UI if it exists
   const oldUI = $('sub-fagtax-ui');
   if (oldUI) oldUI.remove();
@@ -3408,16 +3723,15 @@ function renderSubFagTaxCounters() {
   if (!sub) return;
   const cfg = getSubFagConfig(sub);
 
-  // #18: Use lastCheckSessions instead of window.__ftSessions
+  // Use real-time sessions if available, falling back to lastCheckSessions
   const weekStart = getCurrentWeekStart();
+  const rawSessions = (sessions && sessions.length > 0) ? sessions : (lastCheckSessions || []);
   const subSessions = [];
-  if (lastCheckSessions) {
-    lastCheckSessions.forEach(s => {
-      if (s.loginTime && s.loginTime.seconds && s.loginTime.seconds * 1000 >= weekStart.getTime()) {
-        subSessions.push(s);
-      }
-    });
-  }
+  rawSessions.forEach(s => {
+    if (s.subId === currentUser.uid && s.loginTime && toMs(s.loginTime) >= weekStart.getTime()) {
+      subSessions.push(s);
+    }
+  });
 
   // #9: Use central calculation function
   const calc = calculateWeeklyFagTax(sub, weekStart, subSessions, payments, accountChecks, { includeLiveSeconds: true });
@@ -3495,13 +3809,17 @@ function renderSubFagTaxCounters() {
   const baseLoginCost = calc.loginCost;
   const baseTaxAmount = calc.taxAmount;
   const baseCheckCost = calc.checkCost;
+  const tickerStartMs = Date.now();
+  const initialLiveSecs = cfg.minutesEnabled !== false ? getLiveSessionSeconds() : 0;
+
   liveInterval = setInterval(() => {
     const timeEl = $('ft-live-time');
     const costEl = $('ft-live-cost');
     const totalEl = $('ft-live-total');
     if (!timeEl) { clearInterval(liveInterval); liveInterval = null; return; }
 
-    const liveSecs = cfg.minutesEnabled ? getLiveSessionSeconds() : 0;
+    const wallClockAdded = Math.floor((Date.now() - tickerStartMs) / 1000);
+    const liveSecs = cfg.minutesEnabled !== false ? (initialLiveSecs + wallClockAdded) : 0;
     const total = closedSecs + liveSecs;
     const timeVal = formatDuration(total);
     const timeCostVal = round2(total * perSec);
@@ -3939,7 +4257,7 @@ function renderDomFagTaxInvoices() {
         <div style="font-weight:800;font-size:0.9rem">🐷 ${escapeHtml(subName)}: RECHNUNG KW ${kw} (${range})</div>
         <div style="font-size:0.75rem;color:var(--text-dim);margin-top:2px">Gesamtbetrag: <strong style="color:var(--red)">${total.toFixed(2).replace('.', ',')}€</strong> • Status: ${paidBadge}</div>
       </div>
-      <div style="display:flex; gap: 8px;">
+      <div class="card-actions-responsive">
         ${ft.paid ? '' : `<button class="btn btn--sm btn--success btn-mark-ft-paid" data-ftid="${ft.id}" data-subid="${ft.subId}" data-amt="${total}" data-kw="${kw}">✓ ALS BEZAHLT MARKIEREN</button>`}
         <button class="btn btn--sm btn--cyan btn-download-dom-pdf" data-ftid="${ft.id}">📄 PDF</button>
       </div>
@@ -3947,12 +4265,14 @@ function renderDomFagTaxInvoices() {
   }).join('');
 
   qsa('.btn-mark-ft-paid').forEach(btn => {
-    btn.onclick = () => {
-      openManualPaymentModal(btn.dataset.subid, 'fagtax', `FagTax Rechnung KW ${btn.dataset.kw} bezahlt`, btn.dataset.amt);
-      db.collection('fagTaxes').doc(btn.dataset.ftid).update({
-        paid: true,
-        paidAt: firebase.firestore.FieldValue.serverTimestamp()
-      });
+    btn.onclick = async () => {
+      const ft = fagTaxes.find(f => f.id === btn.dataset.ftid);
+      if (ft) {
+        await settleAllFagTaxPositions(ft, new Date(), 0, parseFloat(btn.dataset.amt) || ft.totalAmount || 0, btn.dataset.kw);
+        showToast(`Facto-Rechnung KW ${btn.dataset.kw} & alle enthaltenen Forderungen als bezahlt markiert!`, 'success');
+      } else {
+        openManualPaymentModal(btn.dataset.subid, 'fagtax', `FagTax Rechnung KW ${btn.dataset.kw} bezahlt`, btn.dataset.amt);
+      }
     };
   });
 
@@ -3992,7 +4312,9 @@ function renderSubFagTaxInvoices() {
         <div style="font-weight:800;font-size:0.9rem">FAG-TAX RECHNUNG KW ${kw} (${range})</div>
         <div style="font-size:0.75rem;color:var(--text-dim);margin-top:2px">Gesamtbetrag: <strong style="color:var(--red)">${total.toFixed(2).replace('.', ',')}€</strong> • Status: ${paidBadge}</div>
       </div>
-      <button class="btn btn--sm btn--cyan btn-download-sub-pdf" data-ftid="${ft.id}">📄 RECHNUNG ALS PDF HERUNTERLADEN</button>
+      <div class="card-actions-responsive">
+        <button class="btn btn--sm btn--cyan btn-download-sub-pdf" data-ftid="${ft.id}">📄 RECHNUNG ALS PDF HERUNTERLADEN</button>
+      </div>
     </div>`;
   }).join('');
 
@@ -4475,7 +4797,7 @@ function renderDomWheelOverview() {
             Mahnstufe: ${sp.mahnStufe || 0} • Status: ${isPaid ? `<span style="color:var(--green);font-weight:700">✅ BEZAHLT am ${dateStr}</span>` : '<span style="color:var(--red);font-weight:700">🔥 OFFEN</span>'}
           </div>
         </div>
-        <div>
+        <div class="card-actions-responsive">
           ${isPaid ? '' : `<button class="btn btn--sm btn--success btn-mark-spin-paid" data-spinid="${sp.id}" data-subid="${sp.subId || ''}" data-amt="${sp.prizeAmount || 0}" data-title="${escapeHtml(sp.prizeTitle || '')}">✓ ALS BEZAHLT MARKIEREN</button>`}
         </div>
       </div>
@@ -4484,11 +4806,37 @@ function renderDomWheelOverview() {
 
   qsa('.btn-mark-spin-paid').forEach(btn => {
     btn.onclick = () => {
-      openManualPaymentModal(btn.dataset.subid, 'glücksrad', `Glücksrad Strafe Bezahlt: ${btn.dataset.title}`, btn.dataset.amt);
-      db.collection('wheelSpins').doc(btn.dataset.spinid).update({
-        paid: true,
-        paidAt: firebase.firestore.FieldValue.serverTimestamp()
-      }).catch(() => {});
+      const spinId = btn.dataset.spinid;
+      const subId = btn.dataset.subid;
+      const now = new Date();
+      openManualPaymentModal(subId, 'glücksrad', `Glücksrad Strafe Bezahlt: ${btn.dataset.title}`, btn.dataset.amt);
+      
+      const sp = wheelSpins.find(w => w.id === spinId);
+      if (sp) { sp.paid = true; sp.paidAt = now; }
+
+      if (db && spinId) {
+        db.collection('wheelSpins').doc(spinId).update({
+          paid: true,
+          paidAt: firebase.firestore.FieldValue.serverTimestamp()
+        }).catch(() => {});
+      }
+
+      if (db && subId) {
+        db.collection('subs').doc(subId).get().then(subDoc => {
+          if (subDoc.exists) {
+            const arr = subDoc.data().wheelSpinsArr || [];
+            let updated = false;
+            arr.forEach(w => {
+              if (w.id === spinId) { w.paid = true; w.paidAt = now.toISOString(); updated = true; }
+            });
+            if (updated) {
+              db.collection('subs').doc(subId).set({ wheelSpinsArr: arr }, { merge: true }).catch(() => {});
+            }
+          }
+        }).catch(() => {});
+      }
+      renderDomWheelOverview();
+      renderFagTaxOverview();
     };
   });
 }
@@ -4573,7 +4921,7 @@ function renderDomLoansOverview() {
             <div style="font-size:0.75rem;color:var(--purple);margin-top:2px;font-weight:700">Bereits getilgt: ${totalPaid.toFixed(2)}€ • Restbestand: <strong style="color:var(--red)">${remaining.toFixed(2)}€</strong></div>
             <div style="font-size:0.7rem;color:var(--text-dim);margin-top:2px">IBAN: ${escapeHtml(lc.iban || '—')} • Abtretung (§ 398 BGB): ✓ Gültig</div>
           </div>
-          <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <div class="card-actions-responsive">
             <button class="btn btn--sm btn--primary btn-dom-loan-pay" data-subid="${lc.subId || ''}" data-lcid="${lc.id}" data-rate="${lc.installmentRate}">💳 RATENEINGANG BUCHEN</button>
             <button class="btn btn--sm btn--cyan btn-download-loan-pdf" data-lcid="${lc.id}">📄 VERTRAG-PDF</button>
             ${isInkassoSold ? `<button class="btn btn--sm btn--orange btn-download-inkasso-pdf" data-lcid="${lc.id}">⚡ INKASSO-BESCHEID PDF</button>` : `<button class="btn btn--sm btn--danger btn-sell-inkasso" data-lcid="${lc.id}" data-subid="${lc.subId || ''}" data-amt="${remaining}">⚖️ FORDERUNG AN INKASSO VERKAUFEN</button>`}
@@ -5078,7 +5426,7 @@ function renderSubLoansView() {
             <div style="font-size:0.75rem;color:var(--text-dim)">Nennbetrag: ${principal.toFixed(2)}€ • Zinsen: ${weeklyInterest.toFixed(2)}€/Woche • Gebühren: ${addonsSum.toFixed(2)}€</div>
             <div style="font-size:0.7rem;color:var(--purple);margin-top:2px">📜 Vertrag: § 781 BGB Schuldanerkenntnis | § 398 BGB Gehaltsabtretung wirksam</div>
           </div>
-          <div style="display:flex;gap:6px">
+          <div class="card-actions-responsive">
             <button class="btn btn--sm btn--cyan btn-download-loan-pdf" data-lcid="${lc.id}">📄 VERTRAG-PDF</button>
             ${isInkassoSold ? `<button class="btn btn--sm btn--orange btn-download-inkasso-pdf" data-lcid="${lc.id}">⚡ VOLLSTRECKUNGSBESCHEID</button>` : ''}
           </div>
@@ -5115,7 +5463,7 @@ function renderSubLoansView() {
         </div>
 
         <!-- ACTIONS: RATE ANPASSEN & SONDERZAHLUNG -->
-        <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+        <div class="form-action-row" style="margin-top:12px">
           <button class="btn btn--sm btn--orange btn-adjust-loan-rate" data-lcid="${lc.id}">✎ RATE ANPASSEN</button>
           <button class="btn btn--sm btn--success btn-loan-sonderzahlung" data-lcid="${lc.id}">💳 SONDERZAHLUNG VEREINBAREN</button>
         </div>
@@ -5421,7 +5769,7 @@ function renderDomPendingCheckins() {
           <div style="font-size:0.8rem;color:var(--red);font-weight:800;margin-top:2px">Betrag: ${amt}€ • Eingereicht am: ${dateStr}</div>
           <div style="font-size:0.75rem;color:var(--text-dim);margin-top:2px">Status: <span style="color:var(--orange);font-weight:700">⏳ WARTE AUF DEINE BESTÄTIGUNG</span></div>
         </div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <div class="card-actions-responsive">
           <button class="btn btn--sm btn--success btn-confirm-checkin-ok" data-pid="${p.id}" data-subname="${escapeHtml(subName)}" data-amt="${amt}">✓ ERHALTEN & RECHTZEITIG GEZAHLT BESTÄTIGEN</button>
           <button class="btn btn--sm btn--danger btn-confirm-checkin-late" data-pid="${p.id}" data-subname="${escapeHtml(subName)}" data-subid="${p.subId || ''}" data-amt="${amt}">⚠️ VERSPÄTET (+5€ STRAFE)</button>
         </div>
@@ -5508,9 +5856,9 @@ function renderTributeTicker() {
       <div style="padding:12px;background:var(--bg-surface);border:1px solid var(--border);border-radius:4px">
         <div style="font-weight:800;font-size:0.85rem">🙇 FLEXIBLER DEVOT-CHECKIN</div>
         <p style="font-size:0.75rem;color:var(--text-dim);margin-top:4px">Kriech her und erweise deinem Herrn spontan deine Ergebenheit durch einen freiwilligen Tribut.</p>
-        <div style="margin-top:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-          <input type="number" id="custom-tribute-amount" value="10" min="1" step="5" style="width:90px;padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);font-size:0.8rem">
-          <button id="btn-tribute-checkin" class="btn btn--sm btn--primary">🙇 TRIBUT-CHECKIN JETZT LEISTEN</button>
+        <div class="input-btn-group" style="margin-top:8px">
+          <input type="number" id="custom-tribute-amount" value="10" min="1" step="5" style="padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);font-size:0.8rem">
+          <button id="btn-tribute-checkin" class="btn btn--sm btn--primary">🙇 TRIBUT-CHECKIN LEISTEN</button>
         </div>
         ${checkinStatusHTML}
       </div>
@@ -5548,12 +5896,12 @@ function openCreateShopItemModal() {
         <textarea id="shop-desc-input" placeholder="Detaillierte Beschreibung des Artikels..." required style="width:100%;padding:8px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);height:60px;margin-top:2px"></textarea>
       </div>
 
-      <div style="display:flex;gap:8px">
-        <div style="flex:1">
+      <div class="form-action-row" style="display:flex;gap:8px">
+        <div style="flex:1;min-width:0">
           <label style="font-size:0.7rem;color:var(--text-dim);font-weight:700">3. MINDESTGEBOT (€) *</label>
           <input type="number" id="shop-minbid-input" value="50" min="1" step="5" required style="width:100%;padding:8px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);margin-top:2px">
         </div>
-        <div style="flex:1">
+        <div style="flex:1;min-width:0">
           <label style="font-size:0.7rem;color:var(--text-dim);font-weight:700">4. VERSANDKOSTEN (€) *</label>
           <input type="number" id="shop-shipping-input" value="4.99" min="0" step="0.01" required style="width:100%;padding:8px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);margin-top:2px">
         </div>
@@ -5862,8 +6210,8 @@ function renderSubShopOverview() {
               ` : ''}
             </div>
           ` : `
-            <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-              <input type="number" class="sub-bid-input" data-itemid="${item.id}" placeholder="Dein Gebot €" min="${item.minBid}" style="width:130px;padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);font-size:0.8rem">
+            <div class="input-btn-group">
+              <input type="number" class="sub-bid-input" data-itemid="${item.id}" placeholder="Dein Gebot €" min="${item.minBid}" style="padding:6px;background:var(--bg-inset);border:1px solid var(--border);color:var(--text);font-size:0.8rem">
               <button class="btn btn--sm btn--primary btn-submit-bid" data-itemid="${item.id}">🔨 GEBOT ABGEBEN</button>
             </div>
           `}
