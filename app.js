@@ -1119,14 +1119,27 @@ async function updateSubUsername(id, username) {
 }
 async function deleteSub(id) {
   try {
+    // 1. Delete main sub document first
+    await db.collection('subs').doc(id).delete();
+    
+    // 2. Immediately remove from local state and update UI
+    subs = subs.filter(s => s.id !== id);
+    renderSubs();
+    populateSubSelects();
+    renderFagTaxOverview();
+    showToast('Sau gelöscht', 'success');
+
+    // 3. Clean up associated collection records gracefully
     const cols = ['sessions', 'payments', 'fagTaxes', 'accountChecks', 'wheelSpins', 'loanContracts', 'shopBids'];
     for (const col of cols) {
-      const snap = await db.collection(col).where('subId', '==', id).get();
-      const del = snap.docs.map(d => d.ref.delete());
-      await Promise.all(del);
+      try {
+        const snap = await db.collection(col).where('subId', '==', id).get();
+        const del = snap.docs.map(d => d.ref.delete());
+        await Promise.all(del);
+      } catch (colErr) {
+        console.warn(`Fehler beim Bereinigen von ${col}:`, colErr);
+      }
     }
-    await db.collection('subs').doc(id).delete();
-    showToast('Sau + alle Daten gelöscht', 'success');
     return true;
   } catch (err) { 
     console.error("Fehler beim Löschen der Sau:", err);
