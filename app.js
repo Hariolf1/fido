@@ -2841,15 +2841,13 @@ function renderFagTaxOverview() {
   const weekStart = getCurrentWeekStart();
   const weekStartMs = weekStart.getTime();
 
-  // === CURRENT WEEK: Always LIVE calculated ===
-  const activeSubs = subs.filter(s => s.active !== false && s.fagTax && s.fagTax.enabled !== false);
   let html = '<div class="fagtax-weekly-overview">';
-  html += '<h4>📊 FAG-TAX ÜBERSICHT (ALLE WOCHEN)</h4>';
+  html += '<h4>📊 FAG-TAX RECHNUNGEN (VERGANGENE WOCHEN)</h4>';
 
   // Export unpaid button
   const unpaid = fagTaxes.filter(f => !f.paid);
   if (unpaid.length > 0) {
-    html += `<div style="margin:10px 0 16px;text-align:center"><button id="btn-export-unpaid" class="btn btn--danger">📄 ALLE OFFENEN EXPORTIEREN</button></div>`;
+    html += `<div style="margin:10px 0 16px;text-align:center"><button id="btn-export-unpaid" class="btn btn--danger">📄 ALLE OFFENEN RECHNUNGEN EXPORTIEREN</button></div>`;
   }
 
   // --- LIVE Current Week ---
@@ -4313,11 +4311,61 @@ function openEditFagTaxModal(ftId, subId, currentAmount) {
 }
 
 // --- DOM WHEEL SPINS OVERVIEW ---
+function getLoansFromPayments() {
+  const reconstructed = [];
+  (payments || []).forEach(p => {
+    if ((p.loanId || (p.description && p.description.toLowerCase().includes('darlehen'))) && (p.paidBy || p.subId)) {
+      const match = p.description ? (p.description.match(/#(lnc_[a-zA-Z0-9_]+)/i) || p.description.match(/#(LNC_[a-zA-Z0-9_]+)/i)) : null;
+      const loanId = p.loanId || (match ? match[1] : ('lnc_' + (p.paidBy || p.subId)));
+      if (!reconstructed.some(l => l.id === loanId)) {
+        reconstructed.push({
+          id: loanId,
+          subId: p.subId || '',
+          username: p.paidBy || p.username || 'sub',
+          displayName: p.paidBy || 'Sau',
+          principal: parseFloat(p.amount) || 100,
+          weeklyInterestRate: 0.10,
+          weeklyInterestAmount: 10.00,
+          installmentRate: 25.00,
+          status: 'active'
+        });
+      }
+    }
+  });
+  return reconstructed;
+}
+
+function getSpinsFromPayments() {
+  const reconstructed = [];
+  (payments || []).forEach(p => {
+    if (p.description && p.description.includes('Glücksrad') && !p.description.includes('Einsatzgebühr')) {
+      const amtMatch = p.description.match(/(\d+(?:[.,]\d+)?)\s*€/);
+      const amt = amtMatch ? parseFloat(amtMatch[1].replace(',', '.')) : (parseFloat(p.amount) || 0);
+      const titleMatch = p.description.match(/Glücksrad Gewinn-Strafe:\s*([^(\n]+)/i);
+      const title = titleMatch ? titleMatch[1].trim() : 'Glücksrad Strafe';
+      const spinId = p.id || ('ws_' + Date.now());
+      if (!reconstructed.some(w => w.id === spinId)) {
+        reconstructed.push({
+          id: spinId,
+          subId: p.subId || '',
+          username: p.paidBy || p.username || 'sub',
+          prizeTitle: title,
+          prizeAmount: amt,
+          paid: p.status === 'confirmed' || p.paid === true,
+          mahnStufe: 0,
+          createdAt: p.createdAt || new Date()
+        });
+      }
+    }
+  });
+  return reconstructed;
+}
+
 function renderDomWheelOverview() {
   const el = document.getElementById('dom-wheel-overview');
   if (!el) return;
 
-  // Aggregate spins from global collection, local state, and embedded sub arrays
+  // Aggregate spins from global collection, local state, embedded sub arrays, and payment history
   const allSpins = [...wheelSpins];
   subs.forEach(s => {
     if (s.wheelSpinsArr && Array.isArray(s.wheelSpinsArr)) {
@@ -4325,6 +4373,9 @@ function renderDomWheelOverview() {
         if (!allSpins.some(x => x.id === w.id)) allSpins.push(w);
       });
     }
+  });
+  getSpinsFromPayments().forEach(w => {
+    if (!allSpins.some(x => x.id === w.id)) allSpins.push(w);
   });
 
   if (allSpins.length === 0) {
@@ -4364,7 +4415,7 @@ function renderDomWheelOverview() {
       db.collection('wheelSpins').doc(btn.dataset.spinid).update({
         paid: true,
         paidAt: firebase.firestore.FieldValue.serverTimestamp()
-      });
+      }).catch(() => {});
     };
   });
 }
@@ -4373,7 +4424,7 @@ function renderDomLoansOverview() {
   const el = document.getElementById('dom-loans-overview');
   if (!el) return;
 
-  // Aggregate loans from global collection, local state, and embedded sub arrays
+  // Aggregate loans from global collection, local state, embedded sub arrays, and payment history
   const allLoans = [...loanContracts];
   subs.forEach(s => {
     if (s.loanContractsArr && Array.isArray(s.loanContractsArr)) {
@@ -4381,6 +4432,9 @@ function renderDomLoansOverview() {
         if (!allLoans.some(x => x.id === l.id)) allLoans.push(l);
       });
     }
+  });
+  getLoansFromPayments().forEach(l => {
+    if (!allLoans.some(x => x.id === l.id)) allLoans.push(l);
   });
 
   if (allLoans.length === 0) {
@@ -5259,12 +5313,32 @@ function openCreateShopItemModal() {
       return false;
     }
 
-    await db.collection('shopItems').add({
+    const itemObj = {
+      id: 'shop_' + Date.now(),
       title, description: desc, minBid, shippingCost: shipping,
       imageUrl: finalImage,
-      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+      createdAt: new Date(),
       status: 'active'
-    });
+    };
+
+    try {
+      if (db) {
+        const ref = await db.collection('shopItems').add({
+          title, description: desc, minBid, shippingCost: shipping,
+          imageUrl: finalImage,
+          createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+          status: 'active'
+        });
+        itemObj.id = ref.id;
+      }
+    } catch (e) {
+      console.warn('Firestore shopItems write fallback to local state:', e);
+    }
+
+    if (!shopItems.some(i => i.id === itemObj.id)) {
+      shopItems.push(itemObj);
+    }
+    renderDomShopOverview();
     showToast('Shop-Artikel erfolgreich eingestellt! 🛍', 'success');
   });
 
