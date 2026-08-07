@@ -1077,7 +1077,10 @@ function startSubsListener() {
       renderSubs();
       populateSubSelects();
       renderFagTaxOverview();
-    }, err => console.warn('Subs listener error:', err.message));
+    }, err => {
+      console.warn('Subs listener error:', err.message);
+      showToast('Datenbank-Fehler beim Laden der Säue: ' + err.message, 'error');
+    });
 }
 
 // ensureDefaultSub removed (#17) — no longer auto-creates hardcoded sub
@@ -3842,6 +3845,9 @@ function startLoansListener() {
       if (currentUser.role === 'dom') renderDomLoansOverview();
       else renderSubLoansView();
     }
+  }, err => {
+    console.warn('Loans listener error:', err.message);
+    showToast('Fehler beim Laden der Darlehen: ' + err.message, 'error');
   });
 }
 
