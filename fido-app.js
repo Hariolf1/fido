@@ -5483,16 +5483,22 @@ function renderDomShopOverview() {
 
   el.innerHTML = shopItems.map(item => {
     const itemBids = shopBids.filter(b => b.itemId === item.id);
+    const pendingBids = itemBids.filter(b => b.status !== 'accepted' && b.status !== 'completed');
+    const acceptedBids = itemBids.filter(b => b.status === 'accepted' || b.status === 'completed');
     const highestBid = itemBids.length > 0 ? Math.max(...itemBids.map(b => b.bidAmount || 0)) : 0;
     const shipping = item.shippingCost !== undefined ? item.shippingCost : 4.99;
+    const isCompleted = item.status === 'completed' || acceptedBids.length > 0;
 
     return `
-      <div style="padding:12px;background:var(--bg-surface);border:1px solid var(--border);margin-bottom:10px;border-radius:4px">
+      <div style="padding:12px;background:var(--bg-surface);border:1px solid ${isCompleted ? 'var(--green)' : 'var(--border)'};margin-bottom:10px;border-radius:4px">
         <div style="display:flex;gap:10px;align-items:flex-start">
           ${item.imageUrl ? `<img src="${item.imageUrl}" style="width:70px;height:70px;object-fit:cover;border:1px solid var(--red);border-radius:4px">` : ''}
           <div style="flex:1">
             <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
-              <div style="font-weight:900;font-size:0.95rem;color:var(--text)">${escapeHtml(item.title)}</div>
+              <div>
+                <div style="font-weight:900;font-size:0.95rem;color:var(--text)">${escapeHtml(item.title)}</div>
+                ${isCompleted ? `<span style="font-size:0.7rem;color:var(--green);font-weight:800;padding:2px 6px;background:rgba(0,230,118,0.15);border:1px solid var(--green);border-radius:3px;display:inline-block;margin-top:2px">✅ AUKTION DURCHGEFÜHRT & GEBUCHT</span>` : ''}
+              </div>
               <button class="btn btn--sm btn--danger btn-delete-shop-item" data-itemid="${item.id}" style="padding:3px 8px;font-size:0.7rem">🗑 LÖSCHEN</button>
             </div>
             <div style="font-size:0.75rem;color:var(--text-dim);margin-top:2px">${escapeHtml(item.description)}</div>
@@ -5503,16 +5509,38 @@ function renderDomShopOverview() {
         </div>
 
         <div style="margin-top:10px;padding-top:8px;border-top:1px dashed var(--border)">
-          <div style="font-weight:800;font-size:0.8rem;color:var(--purple)">🔨 Eingegangene Blind-Gebote (${itemBids.length}):</div>
-          ${itemBids.length === 0 ? '<div style="font-size:0.75rem;color:var(--text-dim);margin-top:2px">Noch keine Gebote eingegangen.</div>' : itemBids.map(b => {
+          <div style="font-weight:800;font-size:0.8rem;color:var(--purple);margin-bottom:4px">
+            🔨 Offene Gebote (${pendingBids.length}):
+          </div>
+          ${pendingBids.length === 0 ? '<div style="font-size:0.75rem;color:var(--text-dim);margin-top:2px">Keine offenen Gebote.</div>' : pendingBids.map(b => {
             const totalWithShipping = (b.bidAmount || 0) + shipping;
             return `
-              <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;background:var(--bg-card);margin-top:4px;border-radius:3px;font-size:0.75rem">
+              <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;background:var(--bg-card);margin-top:4px;border-radius:3px;font-size:0.75rem;flex-wrap:wrap;gap:4px">
                 <span>🐷 <strong>${escapeHtml(b.username)}</strong>: <strong style="color:var(--green);font-size:0.85rem">${b.bidAmount}€</strong> (+${shipping.toFixed(2)}€ Versand = <strong>${totalWithShipping.toFixed(2)}€</strong>)</span>
-                ${b.status === 'accepted' ? '<span style="color:var(--green);font-weight:900">✓ AKZEPTIERT</span>' : `<button class="btn btn--sm btn--success btn-accept-bid" data-bidid="${b.id}">✓ GEBOT AKZEPTIERN</button>`}
+                <button class="btn btn--sm btn--success btn-accept-bid" data-bidid="${b.id}">✓ GEBOT AKZEPTIEREN & ABRECHNEN</button>
               </div>
             `;
           }).join('')}
+
+          ${acceptedBids.length > 0 ? `
+            <div style="margin-top:10px;padding-top:6px;border-top:1px dotted var(--green)">
+              <div style="font-weight:800;font-size:0.8rem;color:var(--green);margin-bottom:4px">
+                ✅ Durchgeführte Abrechnungen & Gewinner-Gebote (${acceptedBids.length}):
+              </div>
+              ${acceptedBids.map(b => {
+                const totalWithShipping = (b.bidAmount || 0) + shipping;
+                return `
+                  <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;background:rgba(0,230,118,0.08);border:1px solid var(--green);margin-top:4px;border-radius:3px;font-size:0.75rem;flex-wrap:wrap;gap:4px">
+                    <span>🐷 <strong>${escapeHtml(b.username)}</strong>: <strong style="color:var(--green)">${b.bidAmount}€</strong> (+${shipping.toFixed(2)}€ Versand = <strong>${totalWithShipping.toFixed(2)}€</strong>)</span>
+                    <div style="display:flex;align-items:center;gap:6px">
+                      <span style="color:var(--green);font-weight:900">✅ DURCHGEFÜHRT & GEBUCHT</span>
+                      <button class="btn btn--sm btn--ghost btn-delete-bid" data-bidid="${b.id}" style="font-size:0.65rem;color:var(--red)" title="Gebot aus der Liste entfernen">🗑 ENTFERNEN</button>
+                    </div>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+          ` : ''}
         </div>
       </div>
     `;
@@ -5530,9 +5558,45 @@ function renderDomShopOverview() {
       const shipping = item && item.shippingCost !== undefined ? item.shippingCost : 4.99;
       const grandTotal = round2((bid.bidAmount || 0) + shipping);
 
-      await db.collection('shopBids').doc(bid.id).update({ status: 'accepted' });
-      await addPayment(grandTotal, 'dreck', `Auktion Gewonnen: ${item ? item.title : 'Shop Artikel'} (inkl. ${shipping.toFixed(2)}€ Versand)`, bid.subId);
-      showToast(`Gebot von ${bid.username} (${grandTotal.toFixed(2)}€) akzeptiert & gebucht!`, 'success');
+      try {
+        if (db) {
+          await db.collection('shopBids').doc(bid.id).update({
+            status: 'accepted',
+            acceptedAt: firebase.firestore.FieldValue.serverTimestamp()
+          });
+          if (item && item.id) {
+            await db.collection('shopItems').doc(item.id).update({
+              status: 'completed',
+              winningBidId: bid.id,
+              winnerUsername: bid.username
+            }).catch(() => {});
+          }
+        }
+        await addPayment(grandTotal, 'dreck', `Auktion Gewonnen: ${item ? item.title : 'Shop Artikel'} (inkl. ${shipping.toFixed(2)}€ Versand)`, bid.subId);
+        bid.status = 'accepted';
+        if (item) item.status = 'completed';
+
+        showToast(`Abrechnung durchgeführt! Gebot von ${bid.username} (${grandTotal.toFixed(2)}€) verbucht ✅`, 'success');
+        renderDomShopOverview();
+      } catch (e) {
+        console.error('Error accepting bid:', e);
+        showToast('Fehler bei der Abrechnung', 'error');
+      }
+    };
+  });
+
+  qsa('.btn-delete-bid').forEach(btn => {
+    btn.onclick = async () => {
+      const bidId = btn.dataset.bidid;
+      if (!bidId) return;
+      try {
+        if (db) await db.collection('shopBids').doc(bidId).delete();
+        shopBids = shopBids.filter(b => b.id !== bidId);
+        showToast('Gebot aus der Liste entfernt', 'info');
+        renderDomShopOverview();
+      } catch (e) {
+        console.error('Error deleting bid:', e);
+      }
     };
   });
 }
