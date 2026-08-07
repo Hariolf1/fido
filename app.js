@@ -148,7 +148,7 @@ let currentSessionStart = 0;
 let accountChecks = [];
 let unsubscribeAccountChecks = null;
 let lastCheckSessions = null; // Sessions data from last account check (replaces window.__ftSessions)
-let isSubFagTaxUnlocked = false; // State flag to persist unlocked Factro-Einblick view
+let isSubFagTaxUnlocked = false; // State flag to persist unlocked Fag-Tax-Einblick view
 
 function isAccountCheckedThisWeek() {
   if (!currentUser || currentUser.role === 'dom') return true;
@@ -1852,7 +1852,7 @@ async function settleAllFagTaxPositions(ft, payDate = new Date(), intAmt = 0, to
       const pmtRef = await db.collection('payments').add({
         amount: pmtAmount,
         category: 'fag-tax',
-        description: `Facto-Rechnung KW ${kw || getKW(ft.weekStart?.seconds ? new Date(ft.weekStart.seconds * 1000) : new Date(ft.weekStart || Date.now()))} Gesamtbegleichung`,
+        description: `Fag-Tax-Rechnung KW ${kw || getKW(ft.weekStart?.seconds ? new Date(ft.weekStart.seconds * 1000) : new Date(ft.weekStart || Date.now()))} Gesamtbegleichung`,
         paidBy: subUsername,
         subId: subId,
         createdAt: firebase.firestore.FieldValue.serverTimestamp(),
@@ -1949,17 +1949,17 @@ async function settleAllFagTaxPositions(ft, payDate = new Date(), intAmt = 0, to
     const duePmt = round2(parseFloat(item.amount) || ((lc.weeklyInterestAmount || ((lc.principal || 0) * 0.10)) + (lc.installmentRate || 0)));
     if (duePmt <= 0) continue;
 
-    // Check if payment doc already exists for this loan & FactoX invoice
+    // Check if payment doc already exists for this loan & Fag-Tax invoice
     const alreadyRecorded = payments.some(p =>
       (p.fagTaxId && p.fagTaxId === ft.id && (p.loanId === lc.id || p.category === 'darlehen')) ||
-      (p.loanId === lc.id && p.description && p.description.includes(`FactoX KW ${invoiceKWStr}`))
+      (p.loanId === lc.id && p.description && (p.description.includes(`Fag-Tax KW ${invoiceKWStr}`) || p.description.includes(`FactoX KW ${invoiceKWStr}`)))
     );
 
     if (!alreadyRecorded) {
       const loanPmtDoc = {
         amount: duePmt,
         category: 'darlehen',
-        description: `Darlehens-Ratenzahlung via FactoX KW ${invoiceKWStr} (#${lc.id.slice(0, 6).toUpperCase()})`,
+        description: `Darlehens-Ratenzahlung via Fag-Tax KW ${invoiceKWStr} (#${lc.id.slice(0, 6).toUpperCase()})`,
         paidBy: subUsername,
         subId: subId,
         loanId: lc.id,
@@ -2166,7 +2166,7 @@ async function markFagTaxPaid(ft) {
     try {
       await settleAllFagTaxPositions(ft, payDate, intAmt, totalPmt, kw);
       closeModal();
-      showToast(`Facto-Rechnung KW ${kw} & alle offenen Positionen bezahlt (${totalPmt.toFixed(2).replace('.',',')}€)`, 'success');
+      showToast(`Fag-Tax-Rechnung KW ${kw} & alle offenen Positionen bezahlt (${totalPmt.toFixed(2).replace('.',',')}€)`, 'success');
     } catch (e) {
       console.error(e);
       showToast('Fehler bei Zahlung', 'error');
@@ -2854,7 +2854,7 @@ async function syncLoanPaymentsFromPaidInvoices() {
         if (!sameSub) return false;
         const matchFT = p.fagTaxId && String(p.fagTaxId) === String(ft.id);
         const matchLoan = p.loanId && (p.loanId === lc.id || lc.id.startsWith(p.loanId) || p.loanId.startsWith(lc.id));
-        const matchDesc = p.description && p.description.includes(`FactoX KW ${kw}`);
+        const matchDesc = p.description && (p.description.includes(`Fag-Tax KW ${kw}`) || p.description.includes(`FactoX KW ${kw}`));
         return matchFT || (matchLoan && matchDesc);
       });
 
@@ -2863,7 +2863,7 @@ async function syncLoanPaymentsFromPaidInvoices() {
         const pmtDoc = {
           amount: round2(pmtAmount),
           category: 'darlehen',
-          description: `Darlehens-Ratenzahlung via FactoX KW ${kw} (#${lc.id.slice(0, 6).toUpperCase()})`,
+          description: `Darlehens-Ratenzahlung via Fag-Tax KW ${kw} (#${lc.id.slice(0, 6).toUpperCase()})`,
           paidBy: subUsername || lc.username || 'sub',
           subId: subId || lc.subId || null,
           loanId: lc.id,
@@ -4078,7 +4078,7 @@ function renderSubFagTaxHistory() {
     <h3>📜 FAG-TAX VERLAUF</h3>`;
 
   if (pastCompletedFts.length === 0) {
-    html += `<p style="color:var(--text-secondary);font-weight:700;text-align:center;padding:12px;font-size:0.8rem">Noch keine abgeschlossenen Factro-Wochen vorhanden.</p>`;
+    html += `<p style="color:var(--text-secondary);font-weight:700;text-align:center;padding:12px;font-size:0.8rem">Noch keine abgeschlossenen Fag-Tax-Wochen vorhanden.</p>`;
   } else {
     pastCompletedFts.forEach(ft => {
       const wsMs = getFagTaxWeekStartMs(ft);
@@ -4523,7 +4523,7 @@ function renderDomFagTaxInvoices() {
       const ft = fagTaxes.find(f => f.id === btn.dataset.ftid);
       if (ft) {
         await settleAllFagTaxPositions(ft, new Date(), 0, parseFloat(btn.dataset.amt) || ft.totalAmount || 0, btn.dataset.kw);
-        showToast(`Facto-Rechnung KW ${btn.dataset.kw} & alle enthaltenen Forderungen als bezahlt markiert!`, 'success');
+        showToast(`Fag-Tax-Rechnung KW ${btn.dataset.kw} & alle enthaltenen Forderungen als bezahlt markiert!`, 'success');
       } else {
         openManualPaymentModal(btn.dataset.subid, 'fagtax', `FagTax Rechnung KW ${btn.dataset.kw} bezahlt`, btn.dataset.amt);
       }
