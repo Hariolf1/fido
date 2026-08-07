@@ -1,4 +1,4 @@
-const CACHE_NAME = 'findom-v11';
+const CACHE_NAME = 'findom-v12';
 const STATIC_ASSETS = [
   'index.html',
   '404.html',

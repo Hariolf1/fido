@@ -4136,6 +4136,13 @@ function openLoanContractModal() {
       loanContracts.push(fullContract);
     }
 
+    // Dual-sync to sub document to bypass collection rule restrictions
+    if (curSubId && db) {
+      db.collection('subs').doc(curSubId).set({
+        loanContractsArr: firebase.firestore.FieldValue.arrayUnion(fullContract)
+      }, { merge: true }).catch(() => {});
+    }
+
     showToast('Darlehensvertrag erfolgreich abgeschlossen! 📜', 'success');
     if (currentUser.role === 'dom') renderDomLoansOverview();
     else renderSubLoansView();
@@ -4309,12 +4316,23 @@ function openEditFagTaxModal(ftId, subId, currentAmount) {
 function renderDomWheelOverview() {
   const el = document.getElementById('dom-wheel-overview');
   if (!el) return;
-  if (wheelSpins.length === 0) {
+
+  // Aggregate spins from global collection, local state, and embedded sub arrays
+  const allSpins = [...wheelSpins];
+  subs.forEach(s => {
+    if (s.wheelSpinsArr && Array.isArray(s.wheelSpinsArr)) {
+      s.wheelSpinsArr.forEach(w => {
+        if (!allSpins.some(x => x.id === w.id)) allSpins.push(w);
+      });
+    }
+  });
+
+  if (allSpins.length === 0) {
     el.innerHTML = '<p style="color:var(--text-dim);font-size:0.8rem">Bisher keine Glücksrad-Strafen gedreht.</p>';
     return;
   }
 
-  el.innerHTML = wheelSpins.map(sp => {
+  el.innerHTML = allSpins.map(sp => {
     const sub = subs.find(s => s.id === sp.subId || s.username === sp.username);
     const subName = sub ? (sub.displayName || sub.username) : (sp.username || 'Sau');
     const isPaid = sp.paid;
@@ -4354,11 +4372,22 @@ function renderDomWheelOverview() {
 function renderDomLoansOverview() {
   const el = document.getElementById('dom-loans-overview');
   if (!el) return;
-  if (loanContracts.length === 0) {
+
+  // Aggregate loans from global collection, local state, and embedded sub arrays
+  const allLoans = [...loanContracts];
+  subs.forEach(s => {
+    if (s.loanContractsArr && Array.isArray(s.loanContractsArr)) {
+      s.loanContractsArr.forEach(l => {
+        if (!allLoans.some(x => x.id === l.id)) allLoans.push(l);
+      });
+    }
+  });
+
+  if (allLoans.length === 0) {
     el.innerHTML = '<p style="color:var(--text-dim);font-size:0.8rem">Bisher keine Darlehensverträge abgeschlossen.</p>';
     return;
   }
-  el.innerHTML = loanContracts.map(lc => {
+  el.innerHTML = allLoans.map(lc => {
     const loanPayments = getLoanPayments(lc);
     const totalPaid = loanPayments.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
     const startTotal = (lc.principal || 0) + (lc.addonsSum || 0);
@@ -4585,9 +4614,8 @@ async function spinWheel() {
       isSpinning = false;
       if (spinBtn) spinBtn.disabled = false;
 
-      // 2. Save penalty to payments AND wheelSpins collection with local fallback
+      // 2. Dual-sync spinObj to sub document
       const dueTime = Date.now() + 24 * 3600 * 1000;
-      
       const spinObj = {
         id: 'ws_' + Date.now(),
         subId: curSubId,
@@ -4599,6 +4627,11 @@ async function spinWheel() {
         mahnStufe: 0,
         createdAt: new Date()
       };
+      if (curSubId && db) {
+        db.collection('subs').doc(curSubId).set({
+          wheelSpinsArr: firebase.firestore.FieldValue.arrayUnion(spinObj)
+        }, { merge: true }).catch(() => {});
+      }
 
       // Handle special segment effects
       if (targetSeg.special === 'double_interest_3w') {
