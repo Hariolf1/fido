@@ -1076,7 +1076,9 @@ function startSubsListener() {
       subs.sort((a, b) => (a.createdAt?.seconds || 0) - (b.createdAt?.seconds || 0));
       renderSubs();
       populateSubSelects();
-      renderFagTaxOverview();
+      if (currentUser && currentUser.role === 'dom') {
+        renderFagTaxOverview();
+      }
     }, err => {
       console.warn('Subs listener error:', err.message);
       showToast('Datenbank-Fehler beim Laden der Säue: ' + err.message, 'error');
@@ -2848,6 +2850,7 @@ function renderFagTaxOverview() {
   }
 
   // --- LIVE Current Week ---
+  const activeSubs = subs.filter(s => s.active !== false && s.fagTax && s.fagTax.enabled !== false);
   if (activeSubs.length > 0) {
     const kw = getKW(weekStart);
     const weekRangeStr = formatWeekRange(weekStart);
