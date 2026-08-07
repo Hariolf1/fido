@@ -1,9 +1,9 @@
-const CACHE_NAME = 'findom-v17';
+const CACHE_NAME = 'findom-v18';
 const STATIC_ASSETS = [
   'index.html',
   '404.html',
   'styles.css',
-  'app.js',
+  'fido-app.js',
   'manifest.json',
   'icon-192.png',
   'icon-512.png'
