@@ -1940,8 +1940,10 @@ async function settleAllFagTaxPositions(ft, payDate = new Date(), intAmt = 0, to
 
   const invoiceKWStr = kw || getKW(ft.weekStart?.seconds ? new Date(ft.weekStart.seconds * 1000) : new Date(ft.weekStart || Date.now()));
 
-  for (const item of loanItemsToProcess) {
-    const lc = (loanContracts || []).find(l => l.id === item.id || (subId && l.subId === subId));
+  const subLoans = (loanContracts || []).filter(l => isSameSub(l.subId, l.username, subId, subUsername));
+  for (let idx = 0; idx < loanItemsToProcess.length; idx++) {
+    const item = loanItemsToProcess[idx];
+    const lc = subLoans.find(l => l.id === item.id || (item.id && (l.id.startsWith(item.id) || item.id.startsWith(l.id))) || (item.title || item.desc || '').toUpperCase().includes(l.id.slice(0, 6).toUpperCase())) || subLoans[idx] || subLoans[0];
     if (!lc) continue;
 
     const duePmt = round2(parseFloat(item.amount) || ((lc.weeklyInterestAmount || ((lc.principal || 0) * 0.10)) + (lc.installmentRate || 0)));
@@ -2839,8 +2841,9 @@ async function syncLoanPaymentsFromPaidInvoices() {
       });
     }
 
-    for (const item of loanItems) {
-      const lc = subLoans.find(l => l.id === item.id) || subLoans[0];
+    for (let idx = 0; idx < loanItems.length; idx++) {
+      const item = loanItems[idx];
+      const lc = subLoans.find(l => l.id === item.id || (item.id && (l.id.startsWith(item.id) || item.id.startsWith(l.id))) || (item.title || item.desc || '').toUpperCase().includes(l.id.slice(0, 6).toUpperCase())) || subLoans[idx] || subLoans[0];
       if (!lc) continue;
 
       const pmtAmount = parseFloat(item.amount) || round2((lc.weeklyInterestAmount || ((lc.principal || 0) * 0.10)) + (lc.installmentRate || 0));
@@ -5670,6 +5673,10 @@ function renderSubLoansView() {
     const remainingBalance = Math.max(0, startTotal - totalPaid);
     const progressPercent = Math.min(100, Math.round((totalPaid / (startTotal || 1)) * 100));
 
+    const singleRateTotal = (lc.weeklyInterestAmount || ((lc.principal || 0) * 0.10)) + (lc.installmentRate || 25);
+    const calcRatenCount = singleRateTotal > 0 ? Math.round(totalPaid / singleRateTotal) : 0;
+    const paidRatenCount = Math.max(loanPayments.length, totalPaid > 0 ? Math.max(1, calcRatenCount) : 0);
+
     const isInkassoSold = lc.status === 'inkasso_sold';
     const mahnBadge = (lc.mahnStufe || 0) > 0 ? `<span style="background:var(--red);color:#fff;padding:2px 6px;border-radius:3px;font-size:0.7rem;font-weight:700">⚠️ MAHNSTUFE ${lc.mahnStufe}</span>` : '';
 
@@ -5714,7 +5721,7 @@ function renderSubLoansView() {
           <div style="font-weight:800;color:var(--text-secondary);margin-bottom:4px">📋 RATENPLAN & MODALITÄTEN:</div>
           <div>• Rhythmus: <strong>${lc.rhythm === 'weekly' ? 'Wöchentlich (jeden Freitag)' : 'Monatlich'}</strong></div>
           <div>• Aktuelle Ratenhöhe: <strong>${(lc.installmentRate || 25).toFixed(2).replace('.', ',')}€</strong></div>
-          <div>• Bereits für dieses Darlehen getilgt: <strong style="color:var(--green)">${totalPaid.toFixed(2).replace('.', ',')}€</strong> (${loanPayments.length} Raten gezahlt)</div>
+          <div>• Bereits für dieses Darlehen getilgt: <strong style="color:var(--green)">${totalPaid.toFixed(2).replace('.', ',')}€</strong> (${paidRatenCount} ${paidRatenCount === 1 ? 'Rate' : 'Raten'} gezahlt)</div>
         </div>
 
         <!-- ACTIONS: RATE ANPASSEN & SONDERZAHLUNG -->
@@ -5800,18 +5807,14 @@ function drawLoanProgressChart(lc) {
 
   points.push({ step: 0, label: stepLabelPrefix + '0', bal: startTotal });
 
-  if (stepRate <= stepInterest) {
-    // Rate doesn't cover interest - debt grows or stalls
+  if (stepRate <= 0) {
     for (step = 1; step <= 12; step++) {
-      bal = bal + stepInterest - stepRate;
       points.push({ step, label: stepLabelPrefix + step, bal: Math.round(bal) });
     }
   } else {
-    // Normal payoff loop until 0 balance
     while (bal > 0 && step < maxStepsLimit) {
       step++;
-      bal = bal + stepInterest - stepRate;
-      if (bal <= 0) bal = 0;
+      bal = Math.max(0, bal - stepRate);
       points.push({ step, label: stepLabelPrefix + step, bal: Math.round(bal) });
     }
   }
@@ -5929,12 +5932,12 @@ function drawLoanProgressChart(lc) {
   ctx.fillText(`IST-REST: ${remainingBalance.toFixed(2).replace('.', ',')}€`, paddingLeft + 28, currentBalY - 5);
   ctx.shadowBlur = 0;
 
-  // Warning text if rate <= interest
-  if (stepRate <= stepInterest) {
+  // Warning text if rate <= 0
+  if (stepRate <= 0) {
     ctx.fillStyle = '#ff1744';
     ctx.font = 'bold 9px sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText(`⚠️ RATENHÖHE LEISTET KEINE TILGUNG (ZINSEN > RATE)`, displayWidth / 2, paddingTop - 8);
+    ctx.fillText(`⚠️ RATENHÖHE IST 0€ (KEINE TILGUNG VEREINBART)`, displayWidth / 2, paddingTop - 8);
   }
 }
 
